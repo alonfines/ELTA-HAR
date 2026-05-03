@@ -1,0 +1,661 @@
+================================================================================
+PART 8: RETRIEVAL VS FINE-TUNING FOR NEW ACTIONS
+================================================================================
+
+EXECUTIVE SUMMARY
+─────────────────
+When deploying a multimodal activity recognition system, new action classes will
+inevitably emerge post-launch. The decision between retrieval-based approaches and
+fine-tuning has cascading effects on latency, accuracy, data requirements, and
+operational complexity. This analysis provides a decision framework grounded in the
+UTD-MHAD system's architecture.
+
+CORE TRADEOFFS
+──────────────
+
+1. RETRIEVAL (k-NN on Frozen Embeddings)
+   ────────────────────────────────────
+
+   Approach: Store training embeddings (sensor + video) in a vector database.
+   For a new action class, collect K exemplars, compute their embeddings, and
+   classify via distance to nearest training examples in embedding space.
+
+   ADVANTAGES:
+   ───────────
+   • Zero computational cost at deployment (no retraining required)
+   • Immediate incorporation of new data (add exemplars → query immediately)
+   • Interpretability: can inspect nearest training samples to explain decisions
+   • No risk of catastrophic forgetting (original classes unchanged)
+   • Works with few-shot scenarios (5-10 exemplars per new class)
+   • Modality-agnostic: can handle missing modalities via learned null embeddings
+     (already implemented via FusionMLP from Part 3)
+
+   DISADVANTAGES:
+   ──────────────
+   • Inference latency: k-NN search in 128-dim space (sensor+video embeddings)
+     requires approximate nearest neighbor (ANN) indexing or O(n) distance computes
+   • Memory footprint: must store all training embeddings (~32k embeddings for
+     8 actions × 8 subjects × 50 sequences ≈ 4MB in float32, acceptable)
+   • Assumes frozen embeddings are representative (may not generalize to
+     significantly different action styles or wearing patterns)
+   • Cannot adapt to systematic distributional shifts (e.g., faster motion,
+     different sensor placement)
+   • Boundary decisions depend entirely on training data proximity; no learned
+     decision boundaries
+
+   PERFORMANCE ESTIMATE:
+   On UTD-MHAD, k-NN (k=5) on Transformer embeddings typically achieves:
+   • Accuracy: 85-92% (slightly lower than MLP-based fusion, ~88%)
+   • Latency: <50ms per query (with ANN index like FAISS)
+   • No training required; works out-of-the-box
+
+2. FINE-TUNING (Retraining Fusion Model)
+   ───────────────────────────────────
+
+   Approach: Collect K exemplars of the new action, append to training set,
+   retrain FusionMLP + Transformer heads via standard supervised learning.
+   Can also use freezing strategies (frozen encoders, train head only).
+
+   ADVANTAGES:
+   ───────────
+   • Learned decision boundaries adapt to new action clusters
+   • Can handle systematic distributional shifts (sensor placement, motion style)
+   • Higher asymptotic accuracy if new action is distinct enough
+   • Can improve existing class boundaries if new action provides discriminative
+     signal (e.g., "jumping" helps refine "raising" classification)
+   • Industry standard approach with proven reproducibility
+   • Simpler to version and audit (model is self-contained)
+   • Works with imbalanced new classes (can apply sampling strategies from Part 5)
+
+   DISADVANTAGES:
+   ──────────────
+   • Requires retraining: 30-60 epochs on GPU (~5-10 min per new action)
+   • Risk of catastrophic forgetting: without careful regularization, original
+     8 classes may degrade by 2-5% accuracy
+   • Requires labeled data annotation (K exemplars × all subjects = 8K samples)
+   • Introduces operational complexity: versioning, A/B testing, rollback plans
+   • Hyperparameter tuning needed: learning rate, epochs, regularization
+   • Validation on held-out test set required (splits training data further)
+
+   PERFORMANCE ESTIMATE:
+   Fine-tuned FusionMLP with new action class:
+   • Original 8 classes: 88-91% (slight 1-3% degradation from ~91% if not careful)
+   • New class: 88-95% accuracy (depends on distinctiveness)
+   • Training time: 5-10 min (2 subjects × LOSO + calibration)
+   • Latency: same as original (~10ms per inference, no change)
+
+DECISION FRAMEWORK
+──────────────────
+
+Use RETRIEVAL if:
+─ New action is stylistically similar to existing classes (e.g., "raising arm"
+  vs "waving arm")
+─ Regulatory constraints require fast production updates (e.g., retail, security)
+─ New action has <30 labeled exemplars and cannot afford to collect more
+─ Model versioning/rollback is critical (changes must be minimal and reversible)
+─ New action class is temporary/experimental (seasonal/event-driven)
+
+Use FINE-TUNING if:
+─ New action is dissimilar to existing classes and needs new decision boundary
+  (e.g., adding "full-body jumping" to wrist-worn sensor classes)
+─ High accuracy on new action is mandatory (>92%)
+─ Can afford retraining latency (~10 min) and validation time
+─ New action affects many existing classes (boundary improvement matters)
+─ Long-term deployment plan (new action is permanent)
+─ Have >50 exemplars per subject and can justify LOSO retraining
+
+HYBRID APPROACH (RECOMMENDED)
+──────────────────────────────
+
+Stage 1 (Rapid Prototyping): Retrieval
+• Deploy k-NN classifier immediately with new action exemplars
+• Monitor online accuracy on held-out validation set
+• Cost: 0 retraining, 50ms latency per query
+
+Stage 2 (Evaluation): Analyze Gaps
+• If accuracy on new action > 85%: STOP, keep retrieval
+• If accuracy on new action < 85% or original classes degrade:
+  proceed to Stage 3
+• Log failure cases: are they truly new action or misclassified existing classes?
+
+Stage 3 (Fine-Tuning): Retraining
+• If decision made to fine-tune:
+  - Freeze Transformer encoders (proven robust)
+  - Retrain FusionMLP head only (reduce forgetting)
+  - Use 80% new exemplars for training, 20% for validation
+  - Apply temperature scaling (Part 6) to calibrate confidence
+  - A/B test new model vs retrieval baseline before cutover
+
+Stage 4 (Continuous Monitoring): Drift Detection
+• Track embedding distribution shift (Part 7 OOD methodology)
+• Flag when new action samples drift significantly from training distribution
+• Trigger retraining if drift > threshold
+
+IMPLEMENTATION DETAILS FOR RETRIEVAL
+─────────────────────────────────────
+
+```python
+# Pseudocode for hybrid deployment
+
+class MultimodalActivityClassifier:
+    def __init__(self, frozen_models, training_embeddings, label_map):
+        """
+        frozen_models: SensorLightningModule, VideoLightningModule, FusionMLP
+        training_embeddings: (N, 128) tensor of all training samples
+        label_map: {class_id: class_name} for all classes (original + new)
+        """
+        self.models = frozen_models
+        self.retrieval_index = build_faiss_index(training_embeddings)
+        self.training_embeddings = training_embeddings
+        self.label_map = label_map
+
+    def classify_retrieval(self, sensor_seq, video_seq, k=5):
+        """Use k-NN on frozen embeddings."""
+        e_s, e_v = self.models.encode(sensor_seq, video_seq)  # (1, 128)
+        distances, indices = self.retrieval_index.search(
+            np.concatenate([e_s, e_v]), k=k
+        )  # (1, k)
+
+        # Soft vote: inverse distance weighting
+        weights = 1.0 / (distances + 1e-6)
+        neighbors_labels = [self.training_labels[i] for i in indices[0]]
+        pred_probs = compute_soft_vote(neighbors_labels, weights)
+
+        return np.argmax(pred_probs), pred_probs
+
+    def classify_finetuned(self, sensor_seq, video_seq):
+        """Use fine-tuned FusionMLP if deployed."""
+        e_s, e_v = self.models.encode(sensor_seq, video_seq)
+        logits = self.models.fusion_head(torch.cat([e_s, e_v], dim=1))
+        probs = torch.softmax(logits, dim=1)
+        return np.argmax(probs), probs
+
+    def online_evaluation_loop(self, new_action_exemplars):
+        """Monitor retrieval accuracy; decide when to retrain."""
+        retrieval_accs = []
+        for batch in new_action_exemplars:
+            _, pred_probs = self.classify_retrieval(batch.sensor, batch.video)
+            retrieval_accs.append(pred_probs[batch.label])
+
+        mean_acc = np.mean(retrieval_accs)
+        if mean_acc < 0.85:
+            print("Trigger fine-tuning workflow")
+            return "RETRAIN"
+        else:
+            print("Retrieval sufficient, continue monitoring")
+            return "CONTINUE"
+```
+
+COST-BENEFIT SUMMARY TABLE
+──────────────────────────
+                  Retrieval      Fine-Tuning
+Accuracy (new)    85-88%         90-95%
+Accuracy (old)    88-91%         86-90%
+Latency           50ms           10ms
+Retraining time   0 min          10 min
+Data required     10 exemplars   50+ exemplars
+Operational risk  Low            Medium
+Reversibility     Instant        Slow (rollback)
+Implementation    2 hours        4 hours + testing
+
+RECOMMENDATION
+──────────────
+Deploy hybrid: start with retrieval (Stage 1), monitor online accuracy,
+transition to fine-tuning only if necessary (Stage 3). This balances
+speed-to-market with accuracy and reduces operational risk.
+
+
+================================================================================
+PART 9: PRODUCTION MONITORING AND DRIFT DETECTION
+================================================================================
+
+EXECUTIVE SUMMARY
+─────────────────
+A deployed multimodal activity recognition system faces three failure modes:
+1) Model drift (changing decision boundaries due to training distribution shift)
+2) Data drift (new action styles, sensor calibration changes, missing modalities)
+3) Concept drift (new actions appear, classes merge, label definitions change)
+
+This section defines a comprehensive monitoring pipeline to detect these failures
+before they degrade user experience, with concrete metrics, alerting thresholds,
+and remediation workflows.
+
+FAILURE MODES AND SIGNALS
+──────────────────────────
+
+1. MODEL DRIFT
+   ───────────
+   Problem: Model accuracy degrades on live data without explicit retrain.
+   Causes:
+   • Domain shift (users perform actions differently post-deployment)
+   • Subtle hardware changes (sensor recalibration, camera angle shifts)
+   • Batch effects (new annotation team introduced label noise)
+
+   Signals:
+   • Accuracy on live validation set drops >3% in rolling window
+   • Confidence scores shift: P(max softmax) drops while entropy increases
+   • Per-class accuracy imbalance: some classes degrade faster than others
+
+2. DATA DRIFT
+   ───────────
+   Problem: Live data distribution diverges from training distribution.
+   Causes:
+   • New sensor placement (chest instead of wrist)
+   • New user population (different age, fitness level, motion speed)
+   • Missing modalities become more common (broken camera, water damage)
+
+   Signals:
+   • Embedding distribution shift (t-SNE cluster separation grows)
+   • OOD score distribution changes (mean OOD score on live data increases)
+   • Modality-specific performance divergence (video accuracy drops but sensor stable)
+
+3. CONCEPT DRIFT
+   ──────────────
+   Problem: Action definitions change or new actions appear in live traffic.
+   Causes:
+   • Business logic change ("raising arm" now includes diagonal raises)
+   • User behavior change (new exercise trend)
+   • New action class discovered
+
+   Signals:
+   • Classification uncertainty increases (prediction set size from Part 6 grows)
+   • Disagreement between modalities increases (Part 7 signal)
+   • Novel samples accumulate in OOD detection pipeline
+
+MONITORING ARCHITECTURE
+───────────────────────
+
+Three-tier monitoring system:
+
+TIER 1: ONLINE METRICS (Real-time, <1s latency per sample)
+────────────────────────────────────────────────────────
+
+Per sample:
+  • Prediction: class, softmax confidence max(p), entropy H(p)
+  • Conformal set size: |C(x)| from Part 6 (larger → uncertain)
+  • OOD score: from Part 7 methods
+  • Modality agreement: 1[argmax(logits_s) == argmax(logits_v)]
+  • Processing time: inference latency (alert if >50ms)
+
+Per 1-hour window (aggregated):
+  • Mean confidence, entropy, OOD score, modality agreement
+  • Percentage of samples with conformal set size > 3
+  • Percentage of high-OOD samples (OOD_score > 0.7)
+  • Per-class prediction frequency (detect new classes)
+
+TIER 2: BATCH METRICS (Hourly, requires labeled validation set)
+────────────────────────────────────────────────────────────────
+
+Maintain small labeled validation set (10 samples/class, ~80 total) collected
+from production after annotation delay (~24-48h). Compare to baseline:
+
+  • Top-1 accuracy: current vs baseline rolling window
+  • Balanced accuracy per class (catch class-specific drift)
+  • Confusion matrix: track which classes are confused
+  • Temperature-scaled ECE: calibration quality (Part 6)
+  • AUC on OOD detection (if new action appears)
+
+TIER 3: DISTRIBUTION METRICS (Daily, requires embedding computation)
+──────────────────────────────────────────────────────────────────
+
+Monthly baseline statistics computed on training set:
+  • Embedding mean/cov per class (sensor and video)
+  • Mahalanobis distance distribution
+  • t-SNE clustering structure
+
+Compare live embeddings to baseline:
+  • Kolmogorov-Smirnov test: embedding distribution divergence
+  • Embedding centroid shift: ||live_mean - train_mean||
+  • New cluster detection: t-SNE identifies novel regions
+  • Modality-specific drift: compare sensor vs video separately
+
+
+ALERTING THRESHOLDS
+───────────────────
+
+ALERT LEVEL 1 (WARNING): Investigate, no action yet
+─────────────────────────────────────────────────
+
+  • Validation accuracy drops 2-3% in rolling 12-hour window
+  • >15% of samples have OOD score > 0.7
+  • >20% of samples with conformal set |C(x)| > 3
+  • Modality disagreement >30% (usually ~10%)
+  • Single class accuracy drops >5% (class-specific issue)
+
+ACTION: Review live examples, check for obvious issues (sensor malfunction,
+new behavior). No automated remediation.
+
+ALERT LEVEL 2 (CRITICAL): Initiate remediation
+────────────────────────────────────────────
+
+  • Validation accuracy drops >3% in rolling 12-hour window
+  • KS test p-value < 0.01 (high embedding distribution divergence)
+  • >30% of samples with OOD score > 0.7 (likely new action class)
+  • Any class accuracy drops >10% (severe class-specific drift)
+  • Inference latency >50ms (system overload)
+
+ACTION: Trigger investigation workflow:
+  1. Automated: Segment high-OOD samples, compute summary statistics
+  2. Human review: Inspect ~50 flagged samples, determine cause
+  3. Decision:
+     a) If new action class: initiate Part 8 workflow (retrieval or fine-tune)
+     b) If systematic shift: collect new validation data, retrain
+     c) If sensor/system issue: escalate to ops team
+  4. Deployment: A/B test remediation before production cutover
+
+ALERT LEVEL 3 (OUTAGE): Stop serving
+────────────────────────────────────
+
+  • >50% of samples with conformal set size = n_classes (model degenerate)
+  • Inference errors (model crash, NaN outputs)
+  • Validation accuracy <50% (worse than random)
+
+ACTION: Revert to last known-good model checkpoint. Page on-call engineer.
+
+
+MONITORING DASHBOARD (Pseudocode)
+──────────────────────────────────
+
+```python
+class MonitoringPipeline:
+    def __init__(self, model, validation_set, baseline_stats):
+        self.model = model
+        self.validation_set = validation_set  # 80 labeled samples
+        self.baseline_stats = baseline_stats  # computed from training set
+        self.metrics_log = []  # time series of metrics
+        self.alerts = []
+
+    def on_prediction(self, sample, pred_logits, pred_label):
+        """Called on every inference in production."""
+        metrics = {
+            "timestamp": time.time(),
+            "predicted_label": pred_label,
+            "confidence": np.max(softmax(pred_logits)),
+            "entropy": compute_entropy(pred_logits),
+            "ood_score": compute_ood_score(sample),  # Part 7
+            "cp_set_size": compute_cp_set_size(pred_logits),  # Part 6
+            "modality_agreement": sample["sensor_pred"] == sample["video_pred"],
+            "inference_latency_ms": 0,  # filled by wrapper
+        }
+        self.metrics_log.append(metrics)
+
+    def hourly_check(self):
+        """Aggregates last hour of predictions."""
+        hour_data = self.metrics_log[-3600:]  # assuming 1 sample/sec
+
+        # Tier 1: online metrics
+        mean_confidence = np.mean([m["confidence"] for m in hour_data])
+        mean_entropy = np.mean([m["entropy"] for m in hour_data])
+        mean_ood_score = np.mean([m["ood_score"] for m in hour_data])
+        agreement_rate = np.mean([m["modality_agreement"] for m in hour_data])
+        uncertain_pct = 100 * np.mean([
+            m["cp_set_size"] > 3 for m in hour_data
+        ])
+
+        print(f"Hour {now()}:")
+        print(f"  Confidence: {mean_confidence:.3f}")
+        print(f"  Entropy: {mean_entropy:.3f}")
+        print(f"  OOD Score: {mean_ood_score:.3f}")
+        print(f"  Modality agreement: {agreement_rate:.1%}")
+        print(f"  Uncertain samples: {uncertain_pct:.1%}")
+
+        # Thresholds
+        if uncertain_pct > 20:
+            self.alerts.append({
+                "level": 1,
+                "message": f"High uncertainty: {uncertain_pct:.1%}",
+                "recommendation": "Review conformal prediction calibration"
+            })
+
+        if mean_ood_score > 0.7:
+            self.alerts.append({
+                "level": 2,
+                "message": f"High OOD score: {mean_ood_score:.3f}",
+                "recommendation": "Possible new action class; review Part 8"
+            })
+
+    def daily_check(self):
+        """Batch metrics: requires labeled validation data."""
+        # Collect annotations from last 24 hours
+        labeled_samples = self._collect_annotations()  # ~80 samples
+
+        # Compute accuracy on validation set
+        preds = self.model.predict_batch([s["data"] for s in labeled_samples])
+        true_labels = [s["label"] for s in labeled_samples]
+
+        current_acc = accuracy_score(true_labels, preds)
+        baseline_acc = self.baseline_stats["accuracy"]
+
+        acc_drop = baseline_acc - current_acc
+        print(f"Validation accuracy: {current_acc:.3f} (baseline: {baseline_acc:.3f}, drop: {acc_drop:.3f})")
+
+        if acc_drop > 0.03:
+            self.alerts.append({
+                "level": 2,
+                "message": f"Accuracy dropped {acc_drop:.1%}",
+                "recommendation": "Initiate retraining workflow"
+            })
+
+    def weekly_check(self):
+        """Distribution metrics: embedding drift."""
+        # Compute embeddings for all samples from last 7 days
+        embeddings = []
+        for sample in self._collect_week_samples():
+            e_s, e_v = self.model.encode(sample)
+            embeddings.append(np.concatenate([e_s, e_v]))
+        embeddings = np.array(embeddings)
+
+        # KS test vs baseline distribution
+        baseline_embeddings = self.baseline_stats["embeddings"]
+        ks_stat, ks_pval = ks_test(embeddings, baseline_embeddings)
+
+        print(f"KS test: stat={ks_stat:.3f}, p-value={ks_pval:.6f}")
+
+        if ks_pval < 0.01:
+            self.alerts.append({
+                "level": 2,
+                "message": f"Embedding distribution shift detected (KS p<0.01)",
+                "recommendation": "Investigate data drift; consider retraining"
+            })
+
+        # t-SNE visualization
+        tsne = TSNE(n_components=2)
+        embeddings_2d = tsne.fit_transform(embeddings)
+        plot_embeddings(embeddings_2d, title="Weekly Embedding Distribution")
+```
+
+DIAGRAM: MONITORING WORKFLOW
+─────────────────────────────
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                   PRODUCTION SYSTEM                             │
+│  ┌──────────────┐      ┌────────────────┐     ┌──────────────┐ │
+│  │   Sensor     │      │  Frozen Models │     │ FusionMLP    │ │
+│  │   Video      │ ────→│ (Transformer)  │ ────→│ Classifier   │ │
+│  └──────────────┘      └────────────────┘     └──────────────┘ │
+│                                                       │          │
+│                                          ┌────────────┴────────┐ │
+│                                          │                     │ │
+│                                    ┌─────▼──────┐      ┌──────▼─┐│
+│                                    │ Prediction │      │ OOD    ││
+│                                    │            │      │ Score  ││
+│                                    └─────┬──────┘      └──────┬─┘│
+│                                          │                    │  │
+└──────────────────────────────────────────┼────────────────────┼──┘
+                                           │                    │
+                    ┌──────────────────────┼────────────────────┼──────────┐
+                    │                      │                    │          │
+            ┌───────▼─────────┐    ┌──────▼──────────────────┐ │          │
+            │  TIER 1: Online │    │  TIER 2: Batch          │ │          │
+            │  Metrics        │    │  (Hourly, labeled       │ │          │
+            │  (Per-sample)   │    │   validation set)       │ │          │
+            │                 │    │                         │ │          │
+            │ • Confidence    │    │ • Accuracy vs baseline  │ │          │
+            │ • Entropy       │    │ • Per-class accuracy    │ │          │
+            │ • OOD score     │    │ • Confusion matrix      │ │          │
+            │ • CP set size   │    │ • Temperature-scaled    │ │          │
+            │ • Modality agr. │    │   ECE (calibration)     │ │          │
+            └───────┬─────────┘    └──────┬──────────────────┘ │          │
+                    │                     │                     │          │
+                    │                     │         ┌───────────┴──────┐   │
+                    │                     │         │ TIER 3: Monthly   │   │
+                    │                     │         │ Distribution      │   │
+                    │                     │         │ Metrics           │   │
+                    │                     │         │                   │   │
+                    │                     │         │ • Embedding KS    │   │
+                    │                     │         │   test            │   │
+                    │                     │         │ • t-SNE drift     │   │
+                    │                     │         │ • Centroid shift  │   │
+                    │                     │         │ • Modality-spec   │   │
+                    │                     │         │   drift           │   │
+                    └─────────────────────┼─────────┴───────────┬──────┘   │
+                                          │                     │          │
+                        ┌─────────────────┴─────────────────────┴──────┐   │
+                        │                                              │   │
+                   ┌────▼──────────────┐                        ┌─────▼──┐ │
+                   │ ALERTING ENGINE   │                        │ Logging│ │
+                   │                   │                        │        │ │
+                   │ Level 1: WARNING  │                        └────┬───┘ │
+                   │ Level 2: CRITICAL │                             │     │
+                   │ Level 3: OUTAGE   │                             │     │
+                   └────┬──────────────┘                             │     │
+                        │                                             │     │
+        ┌───────────────┴────────────────┐                           │     │
+        │                                │                           │     │
+   ┌────▼──────────────┐      ┌─────────▼──────┐                    │     │
+   │ Manual Review     │      │ Automated      │                    │     │
+   │ (Level 1)         │      │ Investigation  │                    │     │
+   │                   │      │ (Level 2/3)    │                    │     │
+   │ • Inspect samples │      │                │                    │     │
+   │ • Analyze trends  │      │ • Segment OOD  │                    │     │
+   │ • Update baseline │      │   samples      │                    │     │
+   └─────────────────┘       │ • Compute      │                    │     │
+                             │   statistics   │                    │     │
+                             │ • Recommend    │                    │     │
+                             │   action       │                    │     │
+                             └──────┬─────────┘                    │     │
+                                    │                              │     │
+                    ┌───────────────┴──────────────┐              │     │
+                    │                              │              │     │
+               ┌────▼─────────┐         ┌─────────▼───┐           │     │
+               │ Remediation  │         │ Continue    │           │     │
+               │              │         │ Monitoring  │           │     │
+               │ A) New action├─────────┘             │           │     │
+               │    (Part 8)  │                       │           │     │
+               │              │                       │           │     │
+               │ B) Retrain   │     ┌─────────────────┴──────┐    │     │
+               │    (new data)│     │ Database Logging       │    │     │
+               │              │     │ (time-series metrics)  │    │     │
+               │ C) Ops       │     └─────────────────┬──────┘    │     │
+               │    escalation│                       │           │     │
+               │              │     ┌─────────────────▼──────┐    │     │
+               └──────┬───────┘     │ Dashboard              │    │     │
+                      │             │ (hourly snapshots)     │    │     │
+                      │             └────────────────────────┘    │     │
+                      │                                            │     │
+                      ▼                                            │     │
+            ┌─────────────────────────────────────────────────────▼──┐  │
+            │                 A/B TEST & DEPLOYMENT                  │  │
+            │ • Shadow new model on live traffic                    │  │
+            │ • Compare metrics vs baseline                         │  │
+            │ • Gradual rollout (5% → 25% → 100%)                 │  │
+            │ • Rollback procedure if accuracy drops               │  │
+            └────────────────────────────────────────────────────────┘  │
+                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+KEY IMPLEMENTATION DETAILS
+──────────────────────────
+
+1. VALIDATION SET MAINTENANCE
+   • Maintain 80 samples (10 per class) collected from production
+   • Annotation delay: 24-48 hours (batch annotation reduces cost)
+   • Stratified sampling: equal distribution across classes
+   • Refresh weekly: new samples in, old samples out (rolling window)
+   • Store with metadata: timestamp, user_id, sensor_batch, video_camera
+
+2. BASELINE STATISTICS
+   • Computed once from training set (Part 2)
+   • Store: mean accuracy, per-class accuracy, embedding distribution
+   • Refresh after each retraining (becomes new baseline)
+   • Version control: tag baseline with model version
+
+3. ALERTING INTEGRATION
+   • Send to PagerDuty (ops team) for Level 2/3
+   • Send to Slack #activity-ml for Level 1 (engineer review)
+   • Include sample links and investigation links
+   • Attach relevant t-SNE plots, confusion matrices
+
+4. A/B TESTING FOR REMEDIATION
+   • Shadow deployment: new model serves predictions alongside old model
+   • Compare metrics on same live traffic (no user impact)
+   • Run for 24-48 hours before deciding
+   • If superior: gradual rollout (5% traffic → 25% → 100% over 48h)
+   • Automated rollback if accuracy drops >1% on any hour
+
+5. RETENTION POLICY
+   • Tier 1 metrics: keep 30 days (hourly aggregates)
+   • Tier 2 metrics: keep 90 days (daily)
+   • Tier 3 metrics: keep 1 year (weekly, for trend analysis)
+   • Raw predictions: log for 7 days, archive to cold storage
+
+COST-BENEFIT ANALYSIS
+─────────────────────
+
+Costs:
+  • Validation set annotation: 10 min/day × $10/hr ≈ $50/week
+  • Monitoring infrastructure: 2 GB/day storage × $0.03/GB ≈ $20/month
+  • Engineer oncall overhead: ~1 hour/week for triage ≈ $50/week
+  • Total: ~$300/month
+
+Benefits:
+  • Catch accuracy regression before 10,000 users affected
+  • Average incident time-to-detect: 4 hours (vs 24+ hours without monitoring)
+  • Prevented incidents (Model Drift, Data Drift): 50% reduction
+  • Average remediation time: 2 hours with automation
+  • Estimated cost of undetected incident: $50k (user trust, data loss)
+
+ROI: Even one incident prevented per year justifies the cost 100×.
+
+FUTURE EXTENSIONS
+─────────────────
+
+1. Automated Retraining Loop
+   • Trigger retraining when accuracy drops 3%
+   • Automatically collect new labels from top-uncertainty samples
+   • Active learning: prefer uncertain samples for annotation
+   • A/B test against previous checkpoint automatically
+
+2. Causal Inference
+   • Diagnose root cause of drift (sensor? user behavior? annotation?)
+   • Use counterfactual analysis to isolate factors
+   • Example: "Accuracy drops only for users with new sensor hardware"
+
+3. Fairness Monitoring
+   • Track per-demographic group accuracy (age, gender, fitness level)
+   • Alert if fairness gap grows >5%
+   • Trigger balanced retraining if disparity detected
+
+4. Continual Learning
+   • Instead of batch retraining, adapt model incrementally
+   • Use rehearsal: mix new data with exemplars from training set
+   • Reduces forgetting, faster adaptation
+
+SUMMARY
+───────
+
+A production monitoring system requires three tiers working in concert:
+1. Real-time Tier 1 metrics for anomaly detection (warnings)
+2. Daily Tier 2 validation for accuracy tracking (critical decisions)
+3. Weekly Tier 3 distribution analysis for systematic drift (strategic planning)
+
+Coupled with alerting thresholds, automated investigation, and A/B testing,
+this pipeline catches failures within hours, not weeks, while keeping false
+alarms manageable. The system evolves: start simple (Tier 1 + 2), add
+sophisticated analysis (Tier 3) as volume grows.
+
+================================================================================
+END OF PARTS 8 AND 9
+================================================================================

@@ -1,0 +1,25 @@
+seed: 42
+subset: [1, 2, 4, 13, 19, 22, 23, 27]
+inertial_dir: Inertial
+feature_type: raw+velocity                    # "raw+velocity" (12-dim) or "hand_crafted" (36-dim)
+normalization_type: global                    # "per_sample" (erases amplitude) or "global" (preserves it)
+in_dim: 12        # 6 IMU channels (accel + gyro) + 6 velocity features
+max_len: 256      # pad/truncate all IMU sequences to this length (only used for raw+velocity mode)
+checkpoint_dir: checkpoints/sensor
+
+model:
+  d_model: 64
+  n_heads: 4
+  n_layers: 2
+  dropout: 0.3
+
+training:
+  n_epochs: 60
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  batch_size: 16
+  grad_clip: 1.0
+
+wandb:
+  project: ELTA-HAR
+  group: sensor_loso

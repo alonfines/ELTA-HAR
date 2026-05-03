@@ -1,0 +1,86 @@
+# Data directories
+RGB-part1/
+RGB-part2/
+RGB-part3/
+RGB-part4/
+Depth/
+Skeleton/
+
+# Zip files
+*.zip
+*.tar.gz
+*.rar
+
+# Claude Code specific
+.claude/
+*.jsonl
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+
+# Outputs (keep structure but ignore large outputs)
+outputs/pose_cache_kalman22/*.npy
+outputs/*.png
+outputs/*.csv
+
+# Checkpoints (training artifacts)
+checkpoints/sensor/fold_s*/*.ckpt
+checkpoints/video/fold_s*/*.ckpt
+checkpoints/backup_*/
+
+# Logs
+train_*.log
+*.log
+
+# Wandb
+wandb/
+
+# Inertial data (keep path but not files)
+Inertial/*.mat
+
+# Sample code (keep but note it's reference)
+Sample_Code/
+
+# Retrain summary (temporary)
+RETRAIN_SUMMARY.md

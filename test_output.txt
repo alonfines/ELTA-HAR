@@ -1,0 +1,9 @@
+Device: mps
+
+Loading sensor dataset...
+  254 samples | 8 subjects | 8 classes
+
+❌ Missing per-fold checkpoints for subject(s): [5, 6, 7, 8]
+   Expected files in: /Users/alonfines/Desktop/ELTA Home Assignment/checkpoints/sensor
+   Pattern: fold_s{subject}.pt   (one per held-out subject)
+   Run training first:  python3 train.py --modality sensor --config configs/sensor.yaml

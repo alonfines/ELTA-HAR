@@ -1,0 +1,25 @@
+seed: 42
+subset: [1, 2, 4, 13, 19, 22, 23, 27]
+kalman_cache: outputs/pose_cache_kalman22
+landmark_set: hands_legs_hips                 # "all" (66-dim), "hands_legs_hips" (48-dim), "upper_body" (44-dim), "lower_body" (16-dim)
+normalization_type: global                    # "per_sample" (erases amplitude) or "global" (preserves it)
+in_dim: 98        # 48 landmarks × 2 (pos+vel) + 2 raw wrist Δx (unnormalized, preserve sign)
+max_len: 256      # pad/truncate all video sequences to this length (harmonized with sensor)
+checkpoint_dir: checkpoints/video
+
+model:
+  d_model: 64
+  n_heads: 4
+  n_layers: 2
+  dropout: 0.3
+
+training:
+  n_epochs: 60
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  batch_size: 16
+  grad_clip: 1.0
+
+wandb:
+  project: ELTA-HAR
+  group: video_loso
