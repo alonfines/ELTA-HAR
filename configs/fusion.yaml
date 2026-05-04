@@ -1,0 +1,39 @@
+seed: 42
+subset: [1, 2, 4, 13, 19, 22, 23, 27]
+
+# Data paths
+inertial_dir: Inertial
+kalman_cache: outputs/pose_cache_kalman22
+checkpoint_dir: checkpoints/fusion
+
+# Modality-specific feature extraction
+feature_type: raw+velocity           # for sensor
+landmark_set: hands_legs_hips        # for video
+normalization_type: global           # both modalities
+
+# Sequence lengths
+max_len_sensor: 256
+max_len_video: 128
+
+# Input dimensions
+in_dim_sensor: 12        # 6 IMU + 6 velocity
+in_dim_video: 98         # 48 landmarks × 2 + 2 wrist deltas
+
+# Model architecture
+model:
+  d_model: 64
+  n_heads: 4
+  n_layers: 2
+  dropout: 0.3
+  d_fusion: 64           # hidden dim for fusion MLP
+
+training:
+  n_epochs: 80
+  lr: 1.0e-3
+  weight_decay: 1.0e-3
+  batch_size: 16
+  grad_clip: 1.0
+
+wandb:
+  project: ELTA-HAR
+  group: fusion_loso

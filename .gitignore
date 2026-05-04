@@ -67,6 +67,7 @@ outputs/*.csv
 # Checkpoints (training artifacts)
 checkpoints/sensor/fold_s*/*.ckpt
 checkpoints/video/fold_s*/*.ckpt
+checkpoints/fusion/fold_s*/*.ckpt
 checkpoints/backup_*/
 
 # Logs

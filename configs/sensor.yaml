@@ -23,3 +23,6 @@ training:
 wandb:
   project: ELTA-HAR
   group: sensor_loso
+
+failure_case:
+  action_ids: [2, 1]  # 2: right arm swipe to the right, 1: right arm swipe to the left

@@ -61,3 +61,12 @@ class TransformerClassifier(nn.Module):
         x_mean = x.mean(dim=1)
         x_max, _ = x.max(dim=1)
         return self.head(x_mean + x_max)
+
+    def get_encoder_features(self, x: torch.Tensor, src_key_padding_mask: torch.Tensor = None) -> torch.Tensor:
+        """Extract encoder outputs (B, T, d_model) before pooling/classification.
+
+        Used by FusionTransformerClassifier to access intermediate token representations.
+        """
+        x = self.proj(x) * math.sqrt(self.d_model)
+        x = self.pos_enc(x)
+        return self.encoder(x, src_key_padding_mask=src_key_padding_mask)

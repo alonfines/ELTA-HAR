@@ -27,6 +27,15 @@ from data.sensor_dataset import extract_imu_features as extract_features
 
 warnings.filterwarnings("ignore")
 
+# ── Jupyter detection ──────────────────────────────────────────────────────────
+def is_jupyter():
+    """Auto-detect if running in Jupyter/IPython notebook."""
+    try:
+        from IPython import get_ipython
+        return get_ipython() is not None
+    except:
+        return False
+
 # ── Load config ────────────────────────────────────────────────────────────────
 with open("config.yaml") as f:
     cfg = yaml.safe_load(f)
@@ -147,7 +156,9 @@ plt.colorbar(im, ax=ax, fraction=0.046)
 plt.tight_layout()
 path = OUT_DIR / "part2_classical_confusion_reduced.png"
 plt.savefig(path, dpi=150)
-plt.show()
+if is_jupyter():
+    plt.show()
+plt.close()
 
 # ── Failure case: knock on door vs boxing ─────────────────────────────────────
 
@@ -200,7 +211,9 @@ if misclassified:
     plt.tight_layout()
     path = OUT_DIR / "part2_classical_failure_reduced.png"
     plt.savefig(path, dpi=150)
-    plt.show()
+    if is_jupyter():
+        plt.show()
+    plt.close()
 else:
     print("  No knock/boxing misclassifications found — classes fully separated.")
 

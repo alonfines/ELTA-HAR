@@ -23,3 +23,6 @@ training:
 wandb:
   project: ELTA-HAR
   group: video_loso
+
+failure_case:
+  action_ids: [4, 13]  # 4: two hand front clap, 13: front boxing
