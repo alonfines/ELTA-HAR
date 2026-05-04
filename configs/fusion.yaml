@@ -11,9 +11,9 @@ feature_type: raw+velocity           # for sensor
 landmark_set: hands_legs_hips        # for video
 normalization_type: global           # both modalities
 
-# Sequence lengths
-max_len_sensor: 256
-max_len_video: 128
+# Sequence lengths (must match training modality configs for distribution consistency)
+max_len_sensor: 256      # matches sensor.yaml
+max_len_video: 256       # matches video.yaml (was 128, causing distribution mismatch)
 
 # Input dimensions
 in_dim_sensor: 12        # 6 IMU + 6 velocity

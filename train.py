@@ -332,7 +332,7 @@ def main() -> None:
             logger=wandb_logger,
             callbacks=[
                 ModelCheckpoint(
-                    dirpath=str(ckpt_root / f"fold_s{test_subject}"),
+                    dirpath=str(ckpt_root / f"{args.modality}_fold_s{test_subject}"),
                     filename="best",
                     save_top_k=1,
                     monitor=monitor_metric,
@@ -355,7 +355,7 @@ def main() -> None:
             ckpt = torch.load(best_ckpt_path, map_location="cpu")
             state_dict = ckpt["state_dict"]
             state_dict = {k.replace("model.", ""): v for k, v in state_dict.items()}
-            pt_path = ckpt_root / f"fold_s{test_subject}.pt"
+            pt_path = ckpt_root / f"{args.modality}_fold_s{test_subject}.pt"
             torch.save(state_dict, pt_path)
             print(f"✓ Saved best checkpoint to {pt_path}")
 

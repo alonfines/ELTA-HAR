@@ -121,17 +121,15 @@ class FusionDataset(Dataset):
         # ── Process video ────────────────────────────────────────────────────
         video_raw = video_raw.astype(np.float32)
 
-        # Extract raw wrist deltas (unnormalized, preserve sign)
-        wrist_deltas = extract_wrist_deltas(video_raw, self.landmark_indices)  # (T, 2)
-
-        # Filter to selected landmarks
-        x_indices = [i * 2 for i in self.landmark_indices]
-        y_indices = [i * 2 + 1 for i in self.landmark_indices]
-        # Interleave x,y per landmark to keep (x0,y0,x1,y1,...) layout
+        # Filter to selected landmarks FIRST
         col_indices = []
         for i in self.landmark_indices:
             col_indices.extend([i * 2, i * 2 + 1])
         video_filtered = video_raw[:, col_indices]  # (T, len(landmarks)*2)
+
+        # Extract raw wrist deltas AFTER filtering (unnormalized, preserve sign)
+        # Must be computed on filtered data for correct landmark indexing
+        wrist_deltas = extract_wrist_deltas(video_filtered, self.landmark_indices)  # (T, 2)
 
         x_video = add_velocity_video(video_filtered)  # (T, len(landmarks)*4)
 
