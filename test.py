@@ -152,7 +152,7 @@ elif args.modality == "fusion":
 def fold_ckpt_path(subject: int, modality: str = None) -> Path:
     if modality is None:
         modality = args.modality
-    return CHECKPOINT_DIR / f"{modality}_fold_s{subject}.pt"
+    return CHECKPOINT_DIR / f"fold_s{subject}.pt"
 
 # ── Plot display wrapper (save + optional inline) ────────────────────────────────
 def display_and_save(fig, filepath, title=""):
@@ -303,10 +303,10 @@ with torch.no_grad():
         # For fusion modality with missing modalities: load single-modality checkpoints
         if args.modality == "fusion" and (args.missing_sensor or args.missing_video):
             if args.missing_sensor:
-                video_ckpt = CHECKPOINT_DIR / f"video_fold_s{test_subject}.pt"
+                video_ckpt = ROOT / "checkpoints/video" / f"fold_s{test_subject}.pt"
                 load_single_modality_checkpoint(model, video_ckpt, "video", device)
             if args.missing_video:
-                sensor_ckpt = CHECKPOINT_DIR / f"sensor_fold_s{test_subject}.pt"
+                sensor_ckpt = ROOT / "checkpoints/sensor" / f"fold_s{test_subject}.pt"
                 load_single_modality_checkpoint(model, sensor_ckpt, "sensor", device)
 
         # ── Compute fold-specific statistics ────────────────────────────────────
