@@ -155,8 +155,6 @@ class FusionLightningModule(pl.LightningModule):
             opt, T_max=self.hparams.n_epochs
         )
         return [opt], [{"scheduler": sched, "interval": "epoch"}]
-
-
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--modality", choices=["sensor", "video", "fusion"], required=True)

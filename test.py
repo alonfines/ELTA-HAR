@@ -4,15 +4,14 @@ Test Transformer Model Evaluation (Load .pt Weights)
 Loads per-fold Transformer checkpoint and evaluates on held-out subject.
 Uses LOSO cross-validation to report aggregate metrics (mean ± std).
 
-Supports sensor, video, and fusion modalities. Dynamic fusion supports missing modality testing.
+Supports sensor, video, and fusion modalities with missing-modality testing via dynamic routing.
 
 Usage:
     python3 test.py --modality sensor
     python3 test.py --modality video
     python3 test.py --modality fusion
-    python3 test.py --modality dynamic_fusion
-    python3 test.py --modality dynamic_fusion --missing-sensor
-    python3 test.py --modality dynamic_fusion --missing-video
+    python3 test.py --modality fusion --missing-sensor
+    python3 test.py --modality fusion --missing-video
 """
 
 import argparse
@@ -53,15 +52,12 @@ Supports three modalities:
   - fusion: Bimodal fusion with dynamic routing for missing modalities
     * --missing-sensor: Load video checkpoint only, skip sensor encoder
     * --missing-video: Load sensor checkpoint only, skip video encoder
-  - dynamic_fusion: Bimodal fusion with learned null embeddings
-    * --missing-sensor: Use learned null embedding for sensor modality
-    * --missing-video: Use learned null embedding for video modality
 """)
-parser.add_argument("--modality", choices=["sensor", "video", "fusion", "dynamic_fusion"], default="sensor")
+parser.add_argument("--modality", choices=["sensor", "video", "fusion"], default="sensor")
 parser.add_argument("--missing-sensor", action="store_true",
-                    help="Test with missing sensor modality (fusion: load video checkpoint only; dynamic_fusion: use learned null embedding)")
+                    help="Test with missing sensor modality (fusion: load video checkpoint only)")
 parser.add_argument("--missing-video", action="store_true",
-                    help="Test with missing video modality (fusion: load sensor checkpoint only; dynamic_fusion: use learned null embedding)")
+                    help="Test with missing video modality (fusion: load sensor checkpoint only)")
 parser.add_argument("--analyse_failure", action="store_true",
                     help="Analyze and visualize failure cases")
 args = parser.parse_args()
@@ -152,45 +148,6 @@ elif args.modality == "fusion":
         "normalization_type": normalization_type,
     }
 
-elif args.modality == "dynamic_fusion":
-    from video_pretraining import ensure_pose_cache
-
-    INERTIAL_DIR = ROOT / cfg.inertial_dir
-    KALMAN_CACHE = ROOT / cfg.kalman_cache
-    ensure_pose_cache(ROOT, cfg, cfg.subset, label_map)
-
-    in_dim_sensor = cfg.in_dim_sensor
-    in_dim_video = cfg.in_dim_video
-    dataset_cls = FusionDataset
-
-    # Colormap based on missing modality scenario
-    if args.missing_sensor:
-        cm_cmap = "Oranges"
-        title_prefix = "DynamicFusionTransformer (Missing Sensor)"
-        cm_filename = "test_dynamic_fusion_missing_sensor_confusion.png"
-    elif args.missing_video:
-        cm_cmap = "Purples"
-        title_prefix = "DynamicFusionTransformer (Missing Video)"
-        cm_filename = "test_dynamic_fusion_missing_video_confusion.png"
-    else:
-        cm_cmap = "RdPu"
-        title_prefix = "DynamicFusionTransformer"
-        cm_filename = "test_dynamic_fusion_confusion.png"
-
-    feature_type = getattr(cfg, "feature_type", "raw+velocity")
-    landmark_set = getattr(cfg, "landmark_set", "hands_legs_hips")
-    normalization_type = getattr(cfg, "normalization_type", "per_sample")
-    sensor_max_len = getattr(cfg, "max_len_sensor", 256)
-    video_max_len = getattr(cfg, "max_len_video", 128)
-
-    dataset_kwargs = {
-        "sensor_max_len": sensor_max_len,
-        "video_max_len": video_max_len,
-        "feature_type": feature_type,
-        "landmark_set": landmark_set,
-        "normalization_type": normalization_type,
-    }
-
 # Per-fold checkpoint naming
 def fold_ckpt_path(subject: int) -> Path:
     return CHECKPOINT_DIR / f"fold_s{subject}.pt"
@@ -219,13 +176,15 @@ CLASS_NAMES = [action_names[a] for a in SUBSET]
 
 # ── Load dataset ───────────────────────────────────────────────────────────────
 print(f"\nLoading {args.modality} dataset...")
+all_video_samples = None  # Will be set for fusion modality to compute stats consistently
 if args.modality == "sensor":
     samples = load_sensor_samples(INERTIAL_DIR, SUBSET, label_map)
 elif args.modality == "video":
     samples = load_video_samples(KALMAN_CACHE, SUBSET, label_map)
-elif args.modality in ["fusion", "dynamic_fusion"]:
+elif args.modality == "fusion":
     sensor_samples = load_sensor_samples(INERTIAL_DIR, SUBSET, label_map)
     video_samples = load_video_samples(KALMAN_CACHE, SUBSET, label_map)
+    all_video_samples = video_samples  # Store all video samples for consistent stats computation
     matched_samples = extract_matched_keys(sensor_samples, video_samples)
     samples = matched_samples
 
@@ -249,7 +208,7 @@ if missing:
 
 # ── Build a model shell once; reload weights per fold ──────────────────────────
 def build_model():
-    if args.modality in ["fusion", "dynamic_fusion"]:
+    if args.modality == "fusion":
         return FusionTransformerClassifier(
             n_classes=len(SUBSET),
             in_dim_sensor=in_dim_sensor,
@@ -333,8 +292,6 @@ fold_statistics: dict = {}  # Track fold-specific statistics for verification
 
 with torch.no_grad():
     for test_subject in subjects:
-        print(f"\nProcessing fold {test_subject}...")
-
         # ── Load checkpoint(s) ──────────────────────────────────────────────────
         ckpt_file = fold_ckpt_path(test_subject)
         state = torch.load(ckpt_file, map_location=device, weights_only=True)
@@ -345,15 +302,13 @@ with torch.no_grad():
         if args.modality == "fusion" and (args.missing_sensor or args.missing_video):
             if args.missing_sensor:
                 video_ckpt = Path("checkpoints/video") / f"fold_s{test_subject}.pt"
-                print(f"  Loading video checkpoint: {video_ckpt}")
                 load_single_modality_checkpoint(model, video_ckpt, "video", device)
             if args.missing_video:
                 sensor_ckpt = Path("checkpoints/sensor") / f"fold_s{test_subject}.pt"
-                print(f"  Loading sensor checkpoint: {sensor_ckpt}")
                 load_single_modality_checkpoint(model, sensor_ckpt, "sensor", device)
 
         # ── Compute fold-specific statistics ────────────────────────────────────
-        fold_dataset_kwargs = dict(dataset_kwargs) if args.modality not in ["fusion", "dynamic_fusion"] else {}
+        fold_dataset_kwargs = dict(dataset_kwargs) if args.modality != "fusion" else {}
         fold_stats = {}
 
         if normalization_type == "global":
@@ -363,24 +318,24 @@ with torch.no_grad():
                 sensor_mean, sensor_std = compute_global_stats(train_subject_samples)
                 fold_stats["sensor"] = {"mean": sensor_mean, "std": sensor_std}
                 fold_dataset_kwargs["global_stats"] = (sensor_mean, sensor_std)
-                print(f"  Sensor stats: mean={sensor_mean.ravel()[:3]}..., std={sensor_std.ravel()[:3]}...")
 
             elif args.modality == "video":
                 landmark_indices = get_landmark_indices(landmark_set)
                 video_mean, video_std = compute_global_stats_video(train_subject_samples, landmark_indices)
                 fold_stats["video"] = {"mean": video_mean, "std": video_std}
                 fold_dataset_kwargs["global_stats"] = (video_mean, video_std)
-                print(f"  Video stats: mean={video_mean.ravel()[:3]}..., std={video_std.ravel()[:3]}...")
 
-            elif args.modality in ["fusion", "dynamic_fusion"]:
+            elif args.modality == "fusion":
                 train_sensor_samples = [(s, y, data[0]) for s, y, data in train_subject_samples
                                        if isinstance(data, tuple) and len(data) == 2]
-                train_video_samples = [(s, y, data[1]) for s, y, data in train_subject_samples
-                                      if isinstance(data, tuple) and len(data) == 2]
+
+                # For video stats: use ALL video samples from training subjects (not just matched pairs)
+                # This ensures video backbone receives data in same distribution as during training
+                train_video_samples_all = [(s, y, raw) for s, y, raw in all_video_samples if s != test_subject]
 
                 sensor_mean, sensor_std = compute_global_stats(train_sensor_samples)
                 landmark_indices = get_landmark_indices(landmark_set)
-                video_mean, video_std = compute_global_stats_video(train_video_samples, landmark_indices)
+                video_mean, video_std = compute_global_stats_video(train_video_samples_all, landmark_indices)
 
                 fold_stats["sensor"] = {"mean": sensor_mean, "std": sensor_std}
                 fold_stats["video"] = {"mean": video_mean, "std": video_std}
@@ -392,9 +347,6 @@ with torch.no_grad():
                 fold_dataset_kwargs["feature_type"] = feature_type
                 fold_dataset_kwargs["landmark_set"] = landmark_set
                 fold_dataset_kwargs["normalization_type"] = normalization_type
-
-                print(f"  Sensor stats: mean={sensor_mean.ravel()[:3]}..., std={sensor_std.ravel()[:3]}...")
-                print(f"  Video stats: mean={video_mean.ravel()[:3]}..., std={video_std.ravel()[:3]}...")
 
         # Store for verification
         fold_statistics[test_subject] = fold_stats
@@ -425,9 +377,6 @@ with torch.no_grad():
                     else:
                         # Bimodal: full fusion model
                         logits = model(x_sensor, x_video)
-                else:  # dynamic_fusion
-                    # Learned null embeddings: forward through full model
-                    logits = model(x_sensor, x_video, missing_sensor=args.missing_sensor, missing_video=args.missing_video)
             else:
                 x, y = batch
                 x = x.to(device)
@@ -443,7 +392,6 @@ with torch.no_grad():
         fold_f1 = f1_score(y_fold_true, y_fold_pred, average="macro")
         fold_accuracies.append(fold_acc)
         fold_f1_scores.append(fold_f1)
-        print(f"  Fold accuracy: {fold_acc:.3f} | F1: {fold_f1:.3f}")
 
         # Pool for confusion matrix
         y_true_all.extend(y_fold_true)
@@ -453,9 +401,6 @@ y_true_all = np.array(y_true_all)
 y_pred_all = np.array(y_pred_all)
 
 # ── Verification: Statistics Consistency ────────────────────────────────────────
-print("\n" + "="*80)
-print("VERIFICATION: Statistics Consistency Across Folds")
-print("="*80)
 
 if fold_statistics:
     for modality in ["sensor", "video"]:
@@ -470,25 +415,11 @@ if fold_statistics:
                     fold_mean_values.append(np.mean(mean_arr))
                     fold_std_values.append(np.mean(std_arr))
 
-        if fold_mean_values:
-            print(f"\n{modality.upper()} Statistics Consistency:")
-            print(f"  Mean across folds: {np.mean(fold_mean_values):.6f} ± {np.std(fold_mean_values):.6f}")
-            print(f"  Std  across folds: {np.mean(fold_std_values):.6f} ± {np.std(fold_std_values):.6f}")
-            if np.std(fold_mean_values) < 0.01:
-                print(f"  ✓ Statistics consistent (low variance = stable normalization)")
-            else:
-                print(f"  ⚠️  Statistics vary across folds (may indicate data heterogeneity)")
 
 # ── Aggregate (mean ± std over folds) ──────────────────────────────────────────
 acc_mean, acc_std = float(np.mean(fold_accuracies)), float(np.std(fold_accuracies))
 f1_mean, f1_std = float(np.mean(fold_f1_scores)), float(np.std(fold_f1_scores))
 
-print("\n" + "="*80)
-print("AGGREGATE METRICS (LOSO Cross-Validation)")
-print("="*80)
-print(f"\nAccuracy: {acc_mean:.3f} ± {acc_std:.3f}")
-print(f"F1-Score: {f1_mean:.3f} ± {f1_std:.3f}")
-print(f"Folds:    {len(fold_accuracies)}")
 
 # ── Confusion matrix (pooled predictions across folds) ─────────────────────────
 path = OUT_DIR / cm_filename
@@ -548,7 +479,7 @@ if args.analyse_failure:
                 elif args.modality == "video":
                     landmark_indices = get_landmark_indices(landmark_set)
                     fold_dataset_kwargs["global_stats"] = compute_global_stats_video(train_subject_samples, landmark_indices)
-                elif args.modality in ["fusion", "dynamic_fusion"]:
+                elif args.modality == "fusion":
                     train_sensor_samples = [(s, y, data[0]) for s, y, data in train_subject_samples
                                            if isinstance(data, tuple) and len(data) == 2]
                     train_video_samples = [(s, y, data[1]) for s, y, data in train_subject_samples
@@ -574,19 +505,17 @@ if args.analyse_failure:
             sample_idx_in_pair = 0
 
             for batch in test_loader:
-                if args.modality in ["fusion", "dynamic_fusion"]:
+                if args.modality == "fusion":
                     (x_sensor, x_video), y = batch
                     x_sensor = x_sensor.to(device)
                     x_video = x_video.to(device)
-                    
-                    if args.modality == "fusion":
-                        if args.missing_sensor:
-                            x_sensor = torch.zeros_like(x_sensor)
-                        if args.missing_video:
-                            x_video = torch.zeros_like(x_video)
+
+                    if args.missing_sensor:
+                        logits = model.video_backbone(x_video)
+                    elif args.missing_video:
+                        logits = model.sensor_backbone(x_sensor)
+                    else:
                         logits = model(x_sensor, x_video)
-                    else:  # dynamic_fusion
-                        logits = model(x_sensor, x_video, missing_sensor=args.missing_sensor, missing_video=args.missing_video)
                 else:
                     x, y = batch
                     x = x.to(device)
@@ -678,7 +607,7 @@ if args.analyse_failure:
                 plt.savefig(path, dpi=150)
                 print(f"✓ Failure case plot saved to {path}")
 
-            elif args.modality in ["fusion", "dynamic_fusion"]:
+            elif args.modality == "fusion":
                 print(f"  Failure case: true={action_pair[y_true]}, predicted={action_pair[y_pred]} (detailed visualization skipped for fusion)")
 
             if is_jupyter():
