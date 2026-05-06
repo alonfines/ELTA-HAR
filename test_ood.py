@@ -54,16 +54,19 @@ def compute_mahal(embeddings, centroids, covariances):
 
 def load_embs(subject, action_subset, dataset_cls, cfg, model, device, global_stats_fusion=None):
     """Load embeddings for subject's samples."""
+    inertial_dir = getattr(cfg, "inertial_dir", "Inertial")
+    kalman_cache = getattr(cfg, "kalman_cache", "outputs/pose_cache_kalman22")
+
     if args.modality == "sensor":
-        samples = load_sensor_samples(ROOT / cfg.inertial_dir, action_subset,
+        samples = load_sensor_samples(ROOT / inertial_dir, action_subset,
                                      {a: i for i, a in enumerate(action_subset)})
     elif args.modality == "video":
-        samples = load_video_samples(ROOT / cfg.kalman_cache, action_subset,
+        samples = load_video_samples(ROOT / kalman_cache, action_subset,
                                     {a: i for i, a in enumerate(action_subset)})
     else:
-        s_samp = load_sensor_samples(ROOT / cfg.inertial_dir, action_subset,
+        s_samp = load_sensor_samples(ROOT / inertial_dir, action_subset,
                                      {a: i for i, a in enumerate(action_subset)})
-        v_samp = load_video_samples(ROOT / cfg.kalman_cache, action_subset,
+        v_samp = load_video_samples(ROOT / kalman_cache, action_subset,
                                     {a: i for i, a in enumerate(action_subset)})
         samples = extract_matched_keys(s_samp, v_samp)
 
@@ -74,14 +77,14 @@ def load_embs(subject, action_subset, dataset_cls, cfg, model, device, global_st
     if args.modality == "fusion":
         # FusionDataset expects (label, paired_data), not (subject, label, paired_data)
         samples = [(y, d) for _, y, d in samples]
-        kw = {"normalization_type": cfg.normalization_type, "augment": False}
+        kw = {"normalization_type": getattr(cfg, "normalization_type", "global"), "augment": False}
         if global_stats_fusion:
             kw["global_stats_sensor"], kw["global_stats_video"] = global_stats_fusion
     else:
         kw = {"max_len": getattr(cfg, "max_len", 256),
-              "normalization_type": cfg.normalization_type, "augment": False}
+              "normalization_type": getattr(cfg, "normalization_type", "global"), "augment": False}
         if args.modality == "video":
-            kw["landmark_set"] = cfg.landmark_set
+            kw["landmark_set"] = getattr(cfg, "landmark_set", "hands_legs_hips")
 
     dataset = dataset_cls(samples, **kw)
     embs, labels = [], []
@@ -103,16 +106,19 @@ def load_embs(subject, action_subset, dataset_cls, cfg, model, device, global_st
 
 def load_probs(subject, action_subset, dataset_cls, cfg, model, device, global_stats_fusion=None):
     """Load softmax probabilities for subject."""
+    inertial_dir = getattr(cfg, "inertial_dir", "Inertial")
+    kalman_cache = getattr(cfg, "kalman_cache", "outputs/pose_cache_kalman22")
+
     if args.modality == "sensor":
-        samples = load_sensor_samples(ROOT / cfg.inertial_dir, action_subset,
+        samples = load_sensor_samples(ROOT / inertial_dir, action_subset,
                                      {a: i for i, a in enumerate(action_subset)})
     elif args.modality == "video":
-        samples = load_video_samples(ROOT / cfg.kalman_cache, action_subset,
+        samples = load_video_samples(ROOT / kalman_cache, action_subset,
                                     {a: i for i, a in enumerate(action_subset)})
     else:
-        s_samp = load_sensor_samples(ROOT / cfg.inertial_dir, action_subset,
+        s_samp = load_sensor_samples(ROOT / inertial_dir, action_subset,
                                      {a: i for i, a in enumerate(action_subset)})
-        v_samp = load_video_samples(ROOT / cfg.kalman_cache, action_subset,
+        v_samp = load_video_samples(ROOT / kalman_cache, action_subset,
                                     {a: i for i, a in enumerate(action_subset)})
         samples = extract_matched_keys(s_samp, v_samp)
 
@@ -123,14 +129,14 @@ def load_probs(subject, action_subset, dataset_cls, cfg, model, device, global_s
     if args.modality == "fusion":
         # FusionDataset expects (label, paired_data), not (subject, label, paired_data)
         samples = [(y, d) for _, y, d in samples]
-        kw = {"normalization_type": cfg.normalization_type, "augment": False}
+        kw = {"normalization_type": getattr(cfg, "normalization_type", "global"), "augment": False}
         if global_stats_fusion:
             kw["global_stats_sensor"], kw["global_stats_video"] = global_stats_fusion
     else:
         kw = {"max_len": getattr(cfg, "max_len", 256),
-              "normalization_type": cfg.normalization_type, "augment": False}
+              "normalization_type": getattr(cfg, "normalization_type", "global"), "augment": False}
         if args.modality == "video":
-            kw["landmark_set"] = cfg.landmark_set
+            kw["landmark_set"] = getattr(cfg, "landmark_set", "hands_legs_hips")
 
     dataset = dataset_cls(samples, **kw)
     probs, labels = [], []
@@ -157,13 +163,16 @@ def compute_global_stats_fusion(train_subjs, action_subset, cfg):
     from data.video_dataset import add_velocity as add_velocity_video, get_landmark_indices
     sensor_all, video_all = [], []
 
-    # Get landmark indices to match FusionDataset filtering
-    landmark_indices = get_landmark_indices(cfg.landmark_set)
+    # Get all config attributes with robust fallbacks
+    landmark_set = getattr(cfg, "landmark_set", "hands_legs_hips")
+    landmark_indices = get_landmark_indices(landmark_set)
+    inertial_dir = getattr(cfg, "inertial_dir", "Inertial")
+    kalman_cache = getattr(cfg, "kalman_cache", "outputs/pose_cache_kalman22")
 
     for train_s in train_subjs:
-        s_samp = load_sensor_samples(ROOT / cfg.inertial_dir, action_subset,
+        s_samp = load_sensor_samples(ROOT / inertial_dir, action_subset,
                                      {a: i for i, a in enumerate(action_subset)})
-        v_samp = load_video_samples(ROOT / cfg.kalman_cache, action_subset,
+        v_samp = load_video_samples(ROOT / kalman_cache, action_subset,
                                     {a: i for i, a in enumerate(action_subset)})
         s_samp = [(s, y, d) for s, y, d in s_samp if s == train_s]
         v_samp = [(s, y, d) for s, y, d in v_samp if s == train_s]
@@ -346,15 +355,15 @@ for fold_idx, test_subj in enumerate(subjects, 1):
         if args.modality == "fusion":
             # FusionDataset expects (label, paired_data), not (subject, label, paired_data)
             ood_samp_fmt = [(y, d) for _, y, d in ood_samp]
-            kw = {"normalization_type": cfg.normalization_type, "augment": False}
+            kw = {"normalization_type": getattr(cfg, "normalization_type", "global"), "augment": False}
             if global_stats_fusion:
                 kw["global_stats_sensor"], kw["global_stats_video"] = global_stats_fusion
         else:
             ood_samp_fmt = ood_samp
             kw = {"max_len": getattr(cfg, "max_len", 256),
-                  "normalization_type": cfg.normalization_type, "augment": False}
+                  "normalization_type": getattr(cfg, "normalization_type", "global"), "augment": False}
             if args.modality == "video":
-                kw["landmark_set"] = cfg.landmark_set
+                kw["landmark_set"] = getattr(cfg, "landmark_set", "hands_legs_hips")
 
         ds = dataset_cls(ood_samp_fmt, **kw)
         ood_e_all, ood_probs_all = [], []
