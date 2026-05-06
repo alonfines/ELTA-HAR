@@ -20,6 +20,10 @@ training:
   batch_size: 16
   grad_clip: 1.0
 
+# Class imbalance experiment (Part 5)
+imbalance_target_actions: [13, 22]  # Jogging, Front Boxing
+imbalance_ratio: 0.5                # Keep 50% of these actions
+
 wandb:
   project: ELTA-HAR
   group: video_loso

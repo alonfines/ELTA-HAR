@@ -9,12 +9,13 @@ Usage:
 """
 
 import argparse
+import math
 import random
 import sys
 import warnings
 from pathlib import Path
 import numpy as np
-from typing import Tuple
+from typing import Tuple, List
 
 import matplotlib
 matplotlib.use("Agg")
@@ -160,12 +161,22 @@ def main() -> None:
     parser.add_argument("--modality", choices=["sensor", "video", "fusion"], required=True)
     parser.add_argument("--config", default=None)
     parser.add_argument("--no-validation", action="store_true", help="Disable validation set (use training only)")
+    parser.add_argument("--imbalance", action="store_true", help="Enable class imbalance mode (downsample training data)")
     args = parser.parse_args()
 
     if args.config is None:
         args.config = f"configs/{args.modality}.yaml"
 
     cfg = load_config(args.config)
+
+    # Load imbalance config
+    imbalance_target_actions = getattr(cfg, "imbalance_target_actions", [13, 22])
+    imbalance_ratio = getattr(cfg, "imbalance_ratio", 0.5)
+
+    if args.imbalance:
+        print(f"\n⚠️  IMBALANCE MODE ENABLED")
+        print(f"   Target actions: {imbalance_target_actions}")
+        print(f"   Ratio: {imbalance_ratio} (keep {imbalance_ratio*100:.0f}%)")
 
     random.seed(cfg.seed)
     np.random.seed(cfg.seed)
@@ -177,6 +188,46 @@ def main() -> None:
     out_dir.mkdir(exist_ok=True)
 
     label_map = {a: i for i, a in enumerate(cfg.subset)}
+
+    def downsample_samples(samples: List[Tuple], target_actions: list, label_map: dict,
+                          imbalance_ratio: float, seed: int) -> List[Tuple]:
+        """Downsample training samples for target actions deterministically.
+
+        Selects exactly ceil(count * imbalance_ratio) samples from each target action.
+        Other actions are kept in full.
+
+        Args:
+            samples: list of (subject, label, data) tuples
+            target_actions: list of action IDs to downsample (e.g., [13, 22])
+            label_map: dict mapping action_id → class_index
+            imbalance_ratio: float, keep this fraction of target action samples
+            seed: int for reproducible random selection
+
+        Returns:
+            downsampled_samples: same format as input
+        """
+        random.seed(seed)
+        target_labels = {label_map[a] for a in target_actions if a in label_map}
+
+        # Group samples by label
+        samples_by_label = {}
+        for s, y, data in samples:
+            if y not in samples_by_label:
+                samples_by_label[y] = []
+            samples_by_label[y].append((s, y, data))
+
+        downsampled = []
+        for label, label_samples in samples_by_label.items():
+            if label in target_labels:
+                # Downsample this target action
+                target_count = max(1, math.ceil(len(label_samples) * imbalance_ratio))
+                selected = random.sample(label_samples, target_count)
+                downsampled.extend(selected)
+            else:
+                # Keep all non-target samples
+                downsampled.extend(label_samples)
+
+        return downsampled
 
     # Modality-specific setup
     if args.modality == "sensor":
@@ -239,7 +290,10 @@ def main() -> None:
         "cuda" if torch.cuda.is_available()           else "cpu"
     )
 
-    ckpt_root = root / cfg.checkpoint_dir
+    if args.imbalance:
+        ckpt_root = root / f"checkpoints/imbalance/{args.modality}"
+    else:
+        ckpt_root = root / cfg.checkpoint_dir
     ckpt_root.mkdir(parents=True, exist_ok=True)
 
     for fold_idx, test_subject in enumerate(subjects):
@@ -251,6 +305,19 @@ def main() -> None:
             train_subject_samples = [(s, y, data) for s, y, data in samples if s != test_subject and s != val_subject]
             train_samples = [(y, data) for s, y, data in train_subject_samples]
             val_samples = [(y, data) for s, y, data in samples if s == val_subject]
+
+        # Apply imbalance downsampling to training data only (not val/test)
+        if args.imbalance:
+            original_count = len(train_subject_samples)
+            train_subject_samples = downsample_samples(
+                train_subject_samples,
+                imbalance_target_actions,
+                label_map,
+                imbalance_ratio,
+                cfg.seed + fold_idx
+            )
+            train_samples = [(y, data) for s, y, data in train_subject_samples]
+            print(f"Fold {fold_idx + 1} (test=s{test_subject}): {original_count} → {len(train_subject_samples)} samples")
 
         if len(train_samples) == 0:
             print(f"\n❌ No training samples for fold s{test_subject}")
@@ -290,7 +357,7 @@ def main() -> None:
 
         wandb_logger = WandbLogger(
             project=cfg.wandb.project,
-            group=cfg.wandb.group,
+            group=cfg.wandb.group + ("_imbalance" if args.imbalance else ""),
             name=f"fold_s{test_subject}",
             log_model=False,
             settings=wandb.Settings(quiet=True)

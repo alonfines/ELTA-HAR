@@ -60,17 +60,29 @@ parser.add_argument("--missing-video", action="store_true",
                     help="Test with missing video modality (fusion: load sensor checkpoint only)")
 parser.add_argument("--analyse_failure", action="store_true",
                     help="Analyze and visualize failure cases")
+parser.add_argument("--imbalance", action="store_true",
+                    help="Load imbalance-trained checkpoints")
 args = parser.parse_args()
 
 # ── Load config ────────────────────────────────────────────────────────────────
 cfg = load_config(f"configs/{args.modality}.yaml")
 SUBSET = cfg.subset
 
+# Load imbalance config
+imbalance_target_actions = getattr(cfg, "imbalance_target_actions", [13, 22])
+imbalance_ratio = getattr(cfg, "imbalance_ratio", 0.5)
+
+if args.imbalance:
+    print(f"⚠️  Testing IMBALANCE-trained model (ratio={imbalance_ratio})")
+
 # ── Paths ──────────────────────────────────────────────────────────────────────
 ROOT = Path(__file__).parent
 SAMPLE_DIR = ROOT / "Sample_Code"
 OUT_DIR = ROOT / "outputs"
-CHECKPOINT_DIR = ROOT / cfg.checkpoint_dir
+if args.imbalance:
+    CHECKPOINT_DIR = ROOT / f"checkpoints/imbalance/{args.modality}"
+else:
+    CHECKPOINT_DIR = ROOT / cfg.checkpoint_dir
 OUT_DIR.mkdir(exist_ok=True)
 
 # ── Label map (needed before modality setup) ───────────────────────────────────
@@ -83,7 +95,7 @@ if args.modality == "sensor":
     dataset_cls = SensorDataset
     cm_cmap = "Blues"
     title_prefix = "SensorTransformer"
-    cm_filename = "test_sensor_confusion.png"
+    cm_filename = "test_sensor" + ("_imbalance" if args.imbalance else "") + "_confusion.png"
     feature_type = getattr(cfg, "feature_type", "raw+velocity")
     normalization_type = getattr(cfg, "normalization_type", "per_sample")
     label_map_sensor = {a: i for i, a in enumerate(cfg.subset)}
@@ -101,7 +113,7 @@ elif args.modality == "video":
     dataset_cls = PoseDataset
     cm_cmap = "Greens"
     title_prefix = "PoseTransformer"
-    cm_filename = "test_video_confusion.png"
+    cm_filename = "test_video" + ("_imbalance" if args.imbalance else "") + "_confusion.png"
     landmark_set = getattr(cfg, "landmark_set", "all")
     normalization_type = getattr(cfg, "normalization_type", "per_sample")
     label_map_video = {a: i for i, a in enumerate(cfg.subset)}
@@ -124,15 +136,18 @@ elif args.modality == "fusion":
     if args.missing_sensor:
         cm_cmap = "Oranges"
         title_prefix = "FusionTransformer (Missing Sensor)"
-        cm_filename = "test_fusion_missing_sensor_confusion.png"
+        suffix = "_missing_sensor" + ("_imbalance" if args.imbalance else "")
+        cm_filename = f"test_fusion{suffix}_confusion.png"
     elif args.missing_video:
         cm_cmap = "Purples"
         title_prefix = "FusionTransformer (Missing Video)"
-        cm_filename = "test_fusion_missing_video_confusion.png"
+        suffix = "_missing_video" + ("_imbalance" if args.imbalance else "")
+        cm_filename = f"test_fusion{suffix}_confusion.png"
     else:
         cm_cmap = "RdPu"
         title_prefix = "FusionTransformer"
-        cm_filename = "test_fusion_confusion.png"
+        suffix = "_imbalance" if args.imbalance else ""
+        cm_filename = f"test_fusion{suffix}_confusion.png"
 
     feature_type = getattr(cfg, "feature_type", "raw+velocity")
     landmark_set = getattr(cfg, "landmark_set", "hands_legs_hips")
