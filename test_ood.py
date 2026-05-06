@@ -1,11 +1,14 @@
 """Part 7: OOD Detection - Complete Two-Tier Implementation with Caching"""
-import argparse, math, pickle
+import argparse, math, pickle, warnings
 from pathlib import Path
 import numpy as np
 import torch, torch.nn.functional as F
 from sklearn.covariance import LedoitWolf
 from sklearn.metrics import roc_auc_score
 import matplotlib.pyplot as plt
+
+# Suppress numerical stability warnings (Ledoit-Wolf handles edge cases gracefully)
+warnings.filterwarnings('ignore', category=RuntimeWarning)
 
 from data.sensor_dataset import SensorDataset, load_sensor_samples
 from data.video_dataset import PoseDataset, load_video_samples
