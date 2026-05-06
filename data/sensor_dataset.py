@@ -119,12 +119,22 @@ class SensorDataset(Dataset):
         feature_type: str = "raw+velocity",
         normalization_type: str = "per_sample",
         global_stats: tuple = None,
+        augment_minority: bool = False,
+        minority_classes: set = None,
+        augment_minority_params: dict = None,
     ):
         self.samples = samples
         self.max_len = max_len
         self.augment = augment
         self.feature_type = feature_type
         self.normalization_type = normalization_type
+        self.augment_minority = augment_minority
+        self.minority_classes = minority_classes or set()
+        self.augment_minority_params = augment_minority_params or {}
+        
+        # Extract augmentation parameters
+        self.amp_scale_range = self.augment_minority_params.get("amplitude_scale_range", [0.8, 1.2])
+        self.time_warp_sigma = self.augment_minority_params.get("time_warp_sigma", 0.15)
 
         assert feature_type in ["raw+velocity", "hand_crafted"], f"Unknown feature_type: {feature_type}"
         assert normalization_type in ["per_sample", "global"], f"Unknown normalization_type: {normalization_type}"
@@ -145,6 +155,15 @@ class SensorDataset(Dataset):
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int]:
         label, raw = self.samples[idx]
         raw = raw.astype(np.float32)
+
+        # Apply augmentation to minority samples if enabled
+        if self.augment_minority and self.augment and label in self.minority_classes:
+            # Apply amplitude scaling
+            amp_scale = np.random.uniform(self.amp_scale_range[0], self.amp_scale_range[1])
+            raw = raw * amp_scale
+            # Apply time warping
+            from data.augmentation import time_warp
+            raw = time_warp(raw, sigma=self.time_warp_sigma)
 
         if self.feature_type == "hand_crafted":
             # Extract 36-dim hand-crafted statistical features (not temporal)

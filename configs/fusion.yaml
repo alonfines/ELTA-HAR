@@ -36,8 +36,21 @@ training:
 
 # Class imbalance experiment (Part 5)
 imbalance_target_actions: [13, 22]  # Jogging, Front Boxing
-imbalance_ratio: 0.5                # Keep 50% of these actions
+imbalance_ratio: 0.25
+
+# Augmentation parameters for --augment_minority flag
+augmentation:
+  # Sensor (IMU) augmentation
+  amplitude_scale_range: [0.8, 1.2]      # Scale factor for amplitude scaling
+  time_warp_sigma: 0.15                  # Time warping smoothness
+  # Video (Pose) augmentation
+  landmark_rotation_range: 5.0            # Degrees (±5°)
+  landmark_scale_range: [0.9, 1.1]       # Scale factor range
 
 wandb:
   project: ELTA-HAR
   group: fusion_loso
+
+# Conformal prediction (Part 6)
+conformal:
+  alpha: 0.1  # Confidence level: 1-alpha = 0.90 (90% coverage target)

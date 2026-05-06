@@ -159,12 +159,22 @@ class PoseDataset(Dataset):
         landmark_set: str = "all",
         normalization_type: str = "per_sample",
         global_stats: tuple = None,
+        augment_minority: bool = False,
+        minority_classes: set = None,
+        augment_minority_params: dict = None,
     ):
         self.samples = samples
         self.augment = augment
         self.normalization_type = normalization_type
         self.landmark_set = landmark_set
         self.landmark_indices = get_landmark_indices(landmark_set)
+        self.augment_minority = augment_minority
+        self.minority_classes = minority_classes or set()
+        self.augment_minority_params = augment_minority_params or {}
+        
+        # Extract augmentation parameters
+        self.landmark_rotation_range = self.augment_minority_params.get("landmark_rotation_range", 5.0)
+        self.landmark_scale_range = self.augment_minority_params.get("landmark_scale_range", [0.9, 1.1])
 
         assert normalization_type in ["per_sample", "global"], f"Unknown normalization_type: {normalization_type}"
 
@@ -201,6 +211,12 @@ class PoseDataset(Dataset):
             x = x[:, coord_indices]
 
         # Extract raw wrist x-deltas BEFORE velocity/normalization (preserve sign)
+        # Apply augmentation to minority samples if enabled
+        if self.augment_minority and self.augment and label in self.minority_classes:
+            from data.augmentation import landmark_rotation, landmark_scaling
+            x = landmark_rotation(x, angle_range=self.landmark_rotation_range)
+            x = landmark_scaling(x, scale_range=tuple(self.landmark_scale_range))
+
         wrist_deltas = extract_wrist_deltas(x, self.landmark_indices)
 
         # Add velocity (on real frames only)

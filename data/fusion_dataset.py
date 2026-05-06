@@ -75,6 +75,9 @@ class FusionDataset(Dataset):
         global_stats_sensor: Tuple = None,
         global_stats_video: Tuple = None,
         augment: bool = False,
+        augment_minority: bool = False,
+        minority_classes: set = None,
+        augment_minority_params: dict = None,
     ):
         self.samples = samples
         self.sensor_max_len = sensor_max_len
@@ -85,6 +88,16 @@ class FusionDataset(Dataset):
         self.global_stats_sensor = global_stats_sensor
         self.global_stats_video = global_stats_video
         self.augment = augment
+        self.augment_minority = augment_minority
+        self.minority_classes = minority_classes or set()
+        self.augment_minority_params = augment_minority_params or {}
+        
+        # Extract augmentation parameters
+        self.amp_scale_range = self.augment_minority_params.get("amplitude_scale_range", [0.8, 1.2])
+        self.time_warp_sigma = self.augment_minority_params.get("time_warp_sigma", 0.15)
+        self.landmark_rotation_range = self.augment_minority_params.get("landmark_rotation_range", 5.0)
+        self.landmark_scale_range = self.augment_minority_params.get("landmark_scale_range", [0.9, 1.1])
+        
         self.landmark_indices = get_landmark_indices(landmark_set)
 
     def __len__(self) -> int:

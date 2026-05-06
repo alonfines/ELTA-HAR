@@ -23,6 +23,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import torch.nn.functional as F
 from sklearn.metrics import accuracy_score, f1_score
 from data.sensor_dataset import SensorDataset, load_sensor_samples, compute_global_stats
 from data.video_dataset import PoseDataset, load_video_samples, compute_global_stats_video, get_landmark_indices
@@ -60,8 +61,14 @@ parser.add_argument("--missing-video", action="store_true",
                     help="Test with missing video modality (fusion: load sensor checkpoint only)")
 parser.add_argument("--analyse_failure", action="store_true",
                     help="Analyze and visualize failure cases")
+parser.add_argument("--conformal", action="store_true",
+                    help="Evaluate using split-conformal prediction (requires conformal-trained checkpoints)")
 parser.add_argument("--imbalance", action="store_true",
                     help="Load imbalance-trained checkpoints")
+parser.add_argument("--weighted_loss", action="store_true",
+                    help="Load weighted_loss-trained checkpoints")
+parser.add_argument("--augment_minority", action="store_true",
+                    help="Load augment_minority-trained checkpoints")
 args = parser.parse_args()
 
 # ── Load config ────────────────────────────────────────────────────────────────
@@ -79,7 +86,13 @@ if args.imbalance:
 ROOT = Path(__file__).parent
 SAMPLE_DIR = ROOT / "Sample_Code"
 OUT_DIR = ROOT / "outputs"
-if args.imbalance:
+if args.conformal:
+    CHECKPOINT_DIR = ROOT / f"checkpoints/conformal/{args.modality}"
+elif args.augment_minority and args.imbalance:
+    CHECKPOINT_DIR = ROOT / f"checkpoints/imbalance_aug/{args.modality}"
+elif args.weighted_loss and args.imbalance:
+    CHECKPOINT_DIR = ROOT / f"checkpoints/imbalance_weighted/{args.modality}"
+elif args.imbalance:
     CHECKPOINT_DIR = ROOT / f"checkpoints/imbalance/{args.modality}"
 else:
     CHECKPOINT_DIR = ROOT / cfg.checkpoint_dir
@@ -95,7 +108,16 @@ if args.modality == "sensor":
     dataset_cls = SensorDataset
     cm_cmap = "Blues"
     title_prefix = "SensorTransformer"
-    cm_filename = "test_sensor" + ("_imbalance" if args.imbalance else "") + "_confusion.png"
+    suffix = ""
+    if args.conformal:
+        suffix = "_conformal"
+    elif args.augment_minority and args.imbalance:
+        suffix = "_imbalance_aug"
+    elif args.weighted_loss and args.imbalance:
+        suffix = "_imbalance_wce"
+    elif args.imbalance:
+        suffix = "_imbalance"
+    cm_filename = f"test_sensor{suffix}_confusion.png"
     feature_type = getattr(cfg, "feature_type", "raw+velocity")
     normalization_type = getattr(cfg, "normalization_type", "per_sample")
     label_map_sensor = {a: i for i, a in enumerate(cfg.subset)}
@@ -113,7 +135,16 @@ elif args.modality == "video":
     dataset_cls = PoseDataset
     cm_cmap = "Greens"
     title_prefix = "PoseTransformer"
-    cm_filename = "test_video" + ("_imbalance" if args.imbalance else "") + "_confusion.png"
+    suffix = ""
+    if args.conformal:
+        suffix = "_conformal"
+    elif args.augment_minority and args.imbalance:
+        suffix = "_imbalance_aug"
+    elif args.weighted_loss and args.imbalance:
+        suffix = "_imbalance_wce"
+    elif args.imbalance:
+        suffix = "_imbalance"
+    cm_filename = f"test_video{suffix}_confusion.png"
     landmark_set = getattr(cfg, "landmark_set", "all")
     normalization_type = getattr(cfg, "normalization_type", "per_sample")
     label_map_video = {a: i for i, a in enumerate(cfg.subset)}
@@ -133,20 +164,26 @@ elif args.modality == "fusion":
     dataset_cls = FusionDataset
 
     # Colormap based on missing modality scenario
+    # Compute WCE suffix
+    if args.conformal:
+        wce_suffix = "_conformal"
+    else:
+        wce_suffix = "_imbalance_aug" if (args.augment_minority and args.imbalance) else ("_imbalance_wce" if args.weighted_loss else ("_imbalance" if args.imbalance else ""))
+
     if args.missing_sensor:
         cm_cmap = "Oranges"
         title_prefix = "FusionTransformer (Missing Sensor)"
-        suffix = "_missing_sensor" + ("_imbalance" if args.imbalance else "")
+        suffix = "_missing_sensor" + wce_suffix
         cm_filename = f"test_fusion{suffix}_confusion.png"
     elif args.missing_video:
         cm_cmap = "Purples"
         title_prefix = "FusionTransformer (Missing Video)"
-        suffix = "_missing_video" + ("_imbalance" if args.imbalance else "")
+        suffix = "_missing_video" + wce_suffix
         cm_filename = f"test_fusion{suffix}_confusion.png"
     else:
         cm_cmap = "RdPu"
         title_prefix = "FusionTransformer"
-        suffix = "_imbalance" if args.imbalance else ""
+        suffix = "_conformal" if args.conformal else ("_imbalance" if args.imbalance else "")
         cm_filename = f"test_fusion{suffix}_confusion.png"
 
     feature_type = getattr(cfg, "feature_type", "raw+velocity")
@@ -300,12 +337,125 @@ def validate_checkpoint_format(state_dict, target_module, modality):
 
     return len(missing) < len(module_keys) * 0.5  # Warn if >50% of params missing
 
+# ── Conformal Prediction Helper Functions ──────────────────────────────────────
+def load_subject_data(subject: int, dataset_cls, fold_dataset_kwargs: dict):
+    """Load all samples for a subject without DataLoader."""
+    subject_samples = [(label, raw) for s, label, raw in samples if s == subject]
+    dataset = dataset_cls(subject_samples, **fold_dataset_kwargs)
+
+    x_list = []
+    y_list = []
+    for i in range(len(dataset)):
+        if args.modality in ["fusion", "dynamic_fusion"]:
+            (x_s, x_v), y = dataset[i]
+            x_list.append((x_s, x_v))
+        else:
+            x, y = dataset[i]
+            x_list.append(x)
+        y_list.append(y)
+
+    if args.modality in ["fusion", "dynamic_fusion"]:
+        x_s_all = torch.stack([x[0] for x in x_list]).to(device)
+        x_v_all = torch.stack([x[1] for x in x_list]).to(device)
+        y_all = torch.tensor(y_list, dtype=torch.long).to(device)
+        return (x_s_all, x_v_all), y_all
+    else:
+        x_all = torch.stack(x_list).to(device)
+        y_all = torch.tensor(y_list, dtype=torch.long).to(device)
+        return x_all, y_all
+
+def get_softmax_scores(x, model, device):
+    """Convert logits to softmax probabilities."""
+    with torch.no_grad():
+        if args.modality in ["fusion", "dynamic_fusion"]:
+            if isinstance(x, tuple) and len(x) == 2:
+                x_s, x_v = x
+                if args.missing_sensor:
+                    logits = model.video_backbone(x_v)
+                elif args.missing_video:
+                    logits = model.sensor_backbone(x_s)
+                else:
+                    logits = model(x_s, x_v)
+            else:
+                logits = model(x)
+        else:
+            logits = model(x)
+        probs = F.softmax(logits, dim=1)
+    return probs
+
+def compute_nonconformity_scores(probs: torch.Tensor, y: torch.Tensor) -> np.ndarray:
+    """Compute non-conformity scores: s_i = 1 - softmax[true_label]."""
+    probs_np = probs.cpu().numpy()
+    y_np = y.cpu().numpy()
+    scores = 1.0 - probs_np[np.arange(len(y_np)), y_np]
+    return scores
+
+def compute_quantile_threshold(scores: np.ndarray, alpha: float = None) -> float:
+    """Compute quantile threshold for conformal prediction."""
+    if alpha is None:
+        alpha = getattr(cfg, 'conformal', type('obj', (object,), {'alpha': 0.1})()).alpha
+    n = len(scores)
+    q_level = (n + 1) * (1 - alpha) / n
+    q_hat = np.quantile(scores, q_level, method='higher')
+    return q_hat
+
+def build_prediction_set(probs: torch.Tensor, q_hat: float) -> list:
+    """Build prediction sets using conformal prediction."""
+    probs_np = probs.cpu().numpy()
+    pred_sets = []
+    empty_count = 0
+
+    for prob_row in probs_np:
+        pred_set = set(np.where(1.0 - prob_row <= q_hat)[0])
+
+        if len(pred_set) == 0:
+            pred_set = {np.argmax(prob_row)}
+            empty_count += 1
+
+        pred_sets.append(pred_set)
+
+    if empty_count > 0:
+        print(f"  ⚠️  {empty_count} empty prediction sets (defaulted to highest softmax class)")
+
+    return pred_sets
+
+def evaluate_conformal_metrics(y_true: np.ndarray, pred_sets: list) -> tuple:
+    """Compute conformal prediction metrics."""
+    coverage = sum(1 for y, pred_set in zip(y_true, pred_sets) if y in pred_set) / len(y_true)
+    avg_set_size = np.mean([len(ps) for ps in pred_sets])
+    ambiguity_rate = sum(1 for ps in pred_sets if len(ps) > 1) / len(pred_sets)
+    return coverage, avg_set_size, ambiguity_rate
+
+def plot_set_size_histogram(pred_sets_all_folds: list, num_classes: int, modality: str):
+    """Plot histogram of prediction set sizes."""
+    all_set_sizes = []
+    for fold_sets in pred_sets_all_folds:
+        all_set_sizes.extend([len(ps) for ps in fold_sets])
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    size_counts = {i: all_set_sizes.count(i) for i in range(1, num_classes + 1)}
+    sizes = sorted(size_counts.keys())
+    counts = [size_counts[s] for s in sizes]
+
+    ax.bar(sizes, counts, color='steelblue', edgecolor='black')
+    ax.set_xlabel('Prediction Set Size', fontsize=12)
+    ax.set_ylabel('Frequency', fontsize=12)
+    ax.set_title(f'{modality.upper()} - Conformal Prediction Set Size Distribution', fontsize=14)
+    ax.set_xticks(sizes)
+    ax.grid(axis='y', alpha=0.3)
+
+    return fig
+
 # ── LOSO inference (one checkpoint per fold) ───────────────────────────────────
 y_true_all: list[int] = []
 y_pred_all: list[int] = []
 fold_accuracies: list[float] = []
 fold_f1_scores: list[float] = []
 fold_statistics: dict = {}  # Track fold-specific statistics for verification
+conformal_coverage_folds: list = [] if args.conformal else None
+conformal_set_sizes_folds: list = [] if args.conformal else None
+conformal_ambiguity_folds: list = [] if args.conformal else None
+pred_sets_all_folds: list = [] if args.conformal else None
 
 with torch.no_grad():
     for test_subject in subjects:
@@ -368,51 +518,118 @@ with torch.no_grad():
         # Store for verification
         fold_statistics[test_subject] = fold_stats
 
-        # ── Create test dataset ────────────────────────────────────────────────
-        test_samples = [(label, raw) for s, label, raw in samples if s == test_subject]
-        test_data = dataset_cls(test_samples, **fold_dataset_kwargs)
-        test_loader = torch.utils.data.DataLoader(test_data, batch_size=32, shuffle=False)
+        if args.conformal:
+            # ══════════════════════════════════════════════════════════════════════
+            # ── CONFORMAL PREDICTION EVALUATION ────────────────────────────────────
+            # ══════════════════════════════════════════════════════════════════════
 
-        y_fold_true: list[int] = []
-        y_fold_pred: list[int] = []
+            # 1. Load calibration subject data
+            fold_idx = list(subjects).index(test_subject)
+            cal_subject = subjects[(fold_idx - 1) % len(subjects)]
 
-        # ── Forward pass with dynamic routing ────────────────────────────────────
-        for batch in test_loader:
-            if args.modality in ["fusion", "dynamic_fusion"]:
-                (x_sensor, x_video), y = batch
-                x_sensor = x_sensor.to(device)
-                x_video = x_video.to(device)
+            print(f"Fold {fold_idx + 1}: Test=s{test_subject}, Cal=s{cal_subject} (conformal)")
 
-                if args.modality == "fusion":
-                    # Dynamic routing: use single-modality backbones if available
-                    if args.missing_sensor:
-                        # Video only: forward through video backbone only
-                        logits = model.video_backbone(x_video)
-                    elif args.missing_video:
-                        # Sensor only: forward through sensor backbone only
-                        logits = model.sensor_backbone(x_sensor)
-                    else:
-                        # Bimodal: full fusion model
-                        logits = model(x_sensor, x_video)
+            # Compute calibration stats (same training subjects as test fold)
+            if normalization_type == "global":
+                train_subject_samples_cal = [(s, y, data) for s, y, data in samples if s != test_subject]
+                # Reuse fold_dataset_kwargs which already has global stats
             else:
-                x, y = batch
-                x = x.to(device)
-                logits = model(x)
+                train_subject_samples_cal = None
 
-            preds = logits.argmax(dim=1).cpu().numpy()
-            y_np = y.numpy()
-            y_fold_true.extend(y_np)
-            y_fold_pred.extend(preds)
+            # Load calibration data
+            x_cal, y_cal = load_subject_data(cal_subject, dataset_cls, fold_dataset_kwargs)
 
-        # ── Per-fold metrics ────────────────────────────────────────────────────
-        fold_acc = accuracy_score(y_fold_true, y_fold_pred)
-        fold_f1 = f1_score(y_fold_true, y_fold_pred, average="macro")
-        fold_accuracies.append(fold_acc)
-        fold_f1_scores.append(fold_f1)
+            # Get softmax probabilities on calibration set
+            probs_cal = get_softmax_scores(x_cal, model, device)
 
-        # Pool for confusion matrix
-        y_true_all.extend(y_fold_true)
-        y_pred_all.extend(y_fold_pred)
+            # Compute non-conformity scores on calibration set
+            scores_cal = compute_nonconformity_scores(probs_cal, y_cal)
+
+            # Compute quantile threshold (90% confidence)
+            q_hat = compute_quantile_threshold(scores_cal, alpha=0.1)
+
+            # 2. Inference on test set
+            x_test, y_test = load_subject_data(test_subject, dataset_cls, fold_dataset_kwargs)
+
+            # Get softmax probabilities on test set
+            probs_test = get_softmax_scores(x_test, model, device)
+
+            # Build prediction sets
+            pred_sets = build_prediction_set(probs_test, q_hat)
+
+            # 3. Conformal metrics
+            y_test_np = y_test.cpu().numpy()
+            coverage, avg_set_size, ambiguity = evaluate_conformal_metrics(y_test_np, pred_sets)
+
+            # Get top-1 predictions for confusion matrix
+            top1_preds = np.array([max(pred_set, key=lambda c: probs_test[i, c].item())
+                                   for i, pred_set in enumerate(pred_sets)])
+
+            conformal_coverage_folds.append(coverage)
+            conformal_set_sizes_folds.append(avg_set_size)
+            conformal_ambiguity_folds.append(ambiguity)
+            pred_sets_all_folds.append(pred_sets)
+
+            print(f"  Quantile q_hat: {q_hat:.4f} | Coverage: {coverage:.3f} | Avg Set Size: {avg_set_size:.2f} | Ambiguity: {ambiguity:.3f}")
+
+            # Pool for confusion matrix (using top-1 from prediction sets)
+            y_true_all.extend(y_test_np)
+            y_pred_all.extend(top1_preds)
+
+            # Store fold metrics for standard evaluation
+            fold_accuracies.append(accuracy_score(y_test_np, top1_preds))
+            fold_f1_scores.append(f1_score(y_test_np, top1_preds, average="macro"))
+
+        else:
+            # ══════════════════════════════════════════════════════════════════════
+            # ── STANDARD EVALUATION ────────────────────────────────────────────────
+            # ══════════════════════════════════════════════════════════════════════
+
+            # ── Create test dataset ────────────────────────────────────────────────
+            test_samples = [(label, raw) for s, label, raw in samples if s == test_subject]
+            test_data = dataset_cls(test_samples, **fold_dataset_kwargs)
+            test_loader = torch.utils.data.DataLoader(test_data, batch_size=32, shuffle=False)
+
+            y_fold_true: list[int] = []
+            y_fold_pred: list[int] = []
+
+            # ── Forward pass with dynamic routing ────────────────────────────────────
+            for batch in test_loader:
+                if args.modality in ["fusion", "dynamic_fusion"]:
+                    (x_sensor, x_video), y = batch
+                    x_sensor = x_sensor.to(device)
+                    x_video = x_video.to(device)
+
+                    if args.modality == "fusion":
+                        # Dynamic routing: use single-modality backbones if available
+                        if args.missing_sensor:
+                            # Video only: forward through video backbone only
+                            logits = model.video_backbone(x_video)
+                        elif args.missing_video:
+                            # Sensor only: forward through sensor backbone only
+                            logits = model.sensor_backbone(x_sensor)
+                        else:
+                            # Bimodal: full fusion model
+                            logits = model(x_sensor, x_video)
+                else:
+                    x, y = batch
+                    x = x.to(device)
+                    logits = model(x)
+
+                preds = logits.argmax(dim=1).cpu().numpy()
+                y_np = y.numpy()
+                y_fold_true.extend(y_np)
+                y_fold_pred.extend(preds)
+
+            # ── Per-fold metrics ────────────────────────────────────────────────────
+            fold_acc = accuracy_score(y_fold_true, y_fold_pred)
+            fold_f1 = f1_score(y_fold_true, y_fold_pred, average="macro")
+            fold_accuracies.append(fold_acc)
+            fold_f1_scores.append(fold_f1)
+
+            # Pool for confusion matrix
+            y_true_all.extend(y_fold_true)
+            y_pred_all.extend(y_fold_pred)
 
 y_true_all = np.array(y_true_all)
 y_pred_all = np.array(y_pred_all)
@@ -450,6 +667,33 @@ print(f"✓ Confusion matrix saved to {path}")
 if is_jupyter():
     plt.show()
 plt.close()
+
+# ── Conformal Prediction Summary ───────────────────────────────────────────────────
+if args.conformal:
+    conformal_alpha = getattr(cfg, 'conformal', type('obj', (object,), {'alpha': 0.1})()).alpha
+    target_coverage = 1 - conformal_alpha
+
+    coverage_mean = np.mean(conformal_coverage_folds)
+    coverage_std = np.std(conformal_coverage_folds)
+    set_size_mean = np.mean(conformal_set_sizes_folds)
+    set_size_std = np.std(conformal_set_sizes_folds)
+    ambiguity_mean = np.mean(conformal_ambiguity_folds)
+    ambiguity_std = np.std(conformal_ambiguity_folds)
+
+    print(f"\n{'='*70}")
+    print(f"{'CONFORMAL PREDICTION SUMMARY':^70}")
+    print(f"{'='*70}")
+    print(f"Alpha (α):           {conformal_alpha:.3f}")
+    print(f"Target Coverage:     {target_coverage:.3f} ({int(target_coverage*100)}%)")
+    print(f"Empirical Coverage:  {coverage_mean:.3f} ± {coverage_std:.3f}")
+    print(f"Average Set Size:    {set_size_mean:.3f} ± {set_size_std:.3f} (out of {len(CLASS_NAMES)} classes)")
+    print(f"Ambiguity Rate:      {ambiguity_mean:.3f} ± {ambiguity_std:.3f} (% with |C| > 1)")
+    print(f"{'='*70}\n")
+
+    # Generate set size histogram
+    fig = plot_set_size_histogram(pred_sets_all_folds, len(CLASS_NAMES), args.modality.upper())
+    hist_path = OUT_DIR / f"test_{args.modality}_conformal_set_size_histogram.png"
+    display_and_save(fig, hist_path, title=f"Conformal set size histogram saved to {hist_path}")
 
 # ── Helper: parse failure_case from config ────────────────────────────────────────
 def parse_failure_case(cfg, label_map):
