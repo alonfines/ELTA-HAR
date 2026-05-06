@@ -218,7 +218,7 @@ print("OOD DETECTION: TWO-TIER EVALUATION (Mahalanobis + Conformal)")
 print("="*70)
 
 dataset_cls = {"sensor": SensorDataset, "video": PoseDataset, "fusion": FusionDataset}[args.modality]
-results = {"id_acc": [], "far": [], "ood_tpr": [], "auroc": []}
+results = {"far": [], "ood_tpr": [], "auroc": []}
 
 for fold_idx, test_subj in enumerate(subjects, 1):
     # FIX #4: Use correct calibration subject (same as train.py)
@@ -267,7 +267,7 @@ for fold_idx, test_subj in enumerate(subjects, 1):
         print(f"Fold {fold_idx}: Loading from cache...", end="")
         with open(cache_file, 'rb') as f:
             cache = pickle.load(f)
-        centroids, covs, dist_th, q_hat = cache['centroids'], cache['covariances'], cache['dist_th'], cache['q_hat']
+        centroids, covs, dist_th = cache['centroids'], cache['covariances'], cache['dist_th']
         print(" ✓")
     else:
         print(f"Fold {fold_idx}: Computing ID reference...", end="")
@@ -304,16 +304,9 @@ for fold_idx, test_subj in enumerate(subjects, 1):
         cal_d = compute_mahal(cal_e, centroids, covs)
         dist_th = float(np.percentile(cal_d, 95.0))
 
-        # FIX #2: Get softmax for conformal threshold (95% coverage = 5% FAR, matching Mahalanobis percentile)
-        cal_probs, cal_l_verify = load_probs(cal_subj, ID_SUBSET, dataset_cls, cfg, model, DEVICE, global_stats_fusion)
-        scores = 1.0 - cal_probs[np.arange(len(cal_l)), cal_l]
-        n = len(scores)
-        q_level = (n + 1) * 0.95 / n  # 95% confidence = 5% FAR, matching Mahalanobis at 95th percentile
-        q_hat = float(np.quantile(scores, q_level, method='higher'))
-
-        # FIX #3: Save cache
+        # Save cache
         with open(cache_file, 'wb') as f:
-            pickle.dump({'centroids': centroids, 'covariances': covs, 'dist_th': dist_th, 'q_hat': q_hat}, f)
+            pickle.dump({'centroids': centroids, 'covariances': covs, 'dist_th': dist_th}, f)
         print(" ✓")
 
     # Phase C: Test on ID samples
@@ -323,17 +316,10 @@ for fold_idx, test_subj in enumerate(subjects, 1):
         continue
 
     test_d = compute_mahal(test_e, centroids, covs)
-    test_probs, _ = load_probs(test_subj, ID_SUBSET, dataset_cls, cfg, model, DEVICE, global_stats_fusion)
 
-    # FIX #1: Tier 2 - Empty set check
-    max_prob = test_probs.max(axis=1)
-    test_conformal_empty = max_prob < (1.0 - q_hat)  # max_softmax < (1 - q_hat) => empty set
-    test_mahal = test_d > dist_th
-
-    # Two-tier alarm: Tier 1 OR Tier 2
-    test_alarm = test_mahal | test_conformal_empty
+    # Mahalanobis distance threshold
+    test_alarm = test_d > dist_th
     far = test_alarm.mean()
-    id_acc = (test_probs.argmax(axis=1) == test_l).mean()
 
     # OOD samples - FIX #2: Extract both embeddings AND softmax
     try:
@@ -372,31 +358,26 @@ for fold_idx, test_subj in enumerate(subjects, 1):
                 kw["landmark_set"] = getattr(cfg, "landmark_set", "hands_legs_hips")
 
         ds = dataset_cls(ood_samp_fmt, **kw)
-        ood_e_all, ood_probs_all = [], []
+        ood_e_all = []
         model.eval()
         with torch.no_grad():
             for sample in ds:
                 if args.modality == "fusion":
                     (x_s, x_v), _ = sample
                     x_s, x_v = x_s.unsqueeze(0).to(DEVICE), x_v.unsqueeze(0).to(DEVICE)
-                    logits, emb = model(x_s, x_v, return_embedding=True)
+                    _, emb = model(x_s, x_v, return_embedding=True)
                 else:
                     x, _ = sample
                     x = x.unsqueeze(0).to(DEVICE)
-                    logits, emb = model(x, return_embedding=True)
+                    _, emb = model(x, return_embedding=True)
                 ood_e_all.append(emb.squeeze(0).cpu().numpy())
-                ood_probs_all.append(F.softmax(logits, dim=1).squeeze(0).cpu().numpy())
 
         ood_e = np.stack(ood_e_all)
-        ood_probs = np.stack(ood_probs_all)
 
         ood_d = compute_mahal(ood_e, centroids, covs)
 
-        # FIX #1: Two-tier alarm on OOD
-        ood_max_prob = ood_probs.max(axis=1)
-        ood_conformal_empty = ood_max_prob < (1.0 - q_hat)
-        ood_mahal = ood_d > dist_th
-        ood_alarm = ood_mahal | ood_conformal_empty
+        # Mahalanobis distance alarm on OOD
+        ood_alarm = ood_d > dist_th
         ood_tpr = ood_alarm.mean()
 
         # AUROC
@@ -404,23 +385,19 @@ for fold_idx, test_subj in enumerate(subjects, 1):
         combined_l = np.concatenate([np.zeros_like(test_l), np.ones(len(ood_d))])
         auroc = roc_auc_score(combined_l, combined_d)
 
-        results["id_acc"].append(id_acc)
         results["far"].append(far)
         results["ood_tpr"].append(ood_tpr)
         results["auroc"].append(auroc)
 
-        print(f"Fold {fold_idx}: ID Acc={id_acc:.3f} | FAR={far:.3f} | OOD TPR={ood_tpr:.3f} | AUROC={auroc:.3f}")
+        print(f"Fold {fold_idx}: FAR={far:.3f} | OOD TPR={ood_tpr:.3f} | AUROC={auroc:.3f}")
 
 print("\n" + "="*70)
-print("SUMMARY - TWO-TIER ALARM PERFORMANCE")
+print("SUMMARY - MAHALANOBIS OOD DETECTION")
 print("="*70)
-if results["id_acc"]:
-    print(f"ID Accuracy:       {np.mean(results['id_acc']):.3f} ± {np.std(results['id_acc']):.3f}")
-    print(f"False Alarm Rate:  {np.mean(results['far']):.3f} ± {np.std(results['far']):.3f}  (lower is better)")
-    print(f"OOD Detection TPR: {np.mean(results['ood_tpr']):.3f} ± {np.std(results['ood_tpr']):.3f}  ✨ (higher is better)")
+if results["far"]:
+    print(f"False Alarm Rate:  {np.mean(results['far']):.3f} ± {np.std(results['far']):.3f}  (5% target)")
+    print(f"OOD Detection TPR: {np.mean(results['ood_tpr']):.3f} ± {np.std(results['ood_tpr']):.3f}  ✨")
     print(f"AUROC:             {np.mean(results['auroc']):.3f} ± {np.std(results['auroc']):.3f}")
 else:
     print("No results collected. Check if OOD samples were loaded successfully.")
-    print(f"Results dict: {results}")
 print("="*70)
-print(f"\nTier 1 (Mahalanobis) + Tier 2 (Conformal) working correctly!")
