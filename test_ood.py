@@ -334,16 +334,19 @@ for fold_idx, test_subj in enumerate(subjects, 1):
 
     # OOD samples - FIX #2: Extract both embeddings AND softmax
     try:
+        inertial_dir = getattr(cfg, "inertial_dir", "Inertial")
+        kalman_cache = getattr(cfg, "kalman_cache", "outputs/pose_cache_kalman22")
+
         if args.modality == "sensor":
-            ood_samp = load_sensor_samples(ROOT / cfg.inertial_dir, OOD_SUBSET,
+            ood_samp = load_sensor_samples(ROOT / inertial_dir, OOD_SUBSET,
                                           {a: i for i, a in enumerate(OOD_SUBSET)})
         elif args.modality == "video":
-            ood_samp = load_video_samples(ROOT / cfg.kalman_cache, OOD_SUBSET,
+            ood_samp = load_video_samples(ROOT / kalman_cache, OOD_SUBSET,
                                          {a: i for i, a in enumerate(OOD_SUBSET)})
         else:
-            s_s = load_sensor_samples(ROOT / cfg.inertial_dir, OOD_SUBSET,
+            s_s = load_sensor_samples(ROOT / inertial_dir, OOD_SUBSET,
                                      {a: i for i, a in enumerate(OOD_SUBSET)})
-            v_s = load_video_samples(ROOT / cfg.kalman_cache, OOD_SUBSET,
+            v_s = load_video_samples(ROOT / kalman_cache, OOD_SUBSET,
                                     {a: i for i, a in enumerate(OOD_SUBSET)})
             ood_samp = extract_matched_keys(s_s, v_s)
     except Exception as e:
