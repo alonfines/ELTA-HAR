@@ -220,18 +220,22 @@ for fold_idx, test_subj in enumerate(subjects, 1):
 
     state = torch.load(str(ckpt), map_location=DEVICE, weights_only=True)
 
-    # Create model
+    # Create model (robust config access to handle different YAML structures)
     if args.modality == "sensor":
-        model = TransformerClassifier(n_classes=len(ID_SUBSET), in_dim=cfg.in_dim,
+        in_dim = getattr(cfg, "in_dim_sensor", getattr(cfg, "in_dim", 12))
+        model = TransformerClassifier(n_classes=len(ID_SUBSET), in_dim=in_dim,
                                      d_model=cfg.model.d_model, n_heads=cfg.model.n_heads,
                                      n_layers=cfg.model.n_layers, dropout=cfg.model.dropout)
     elif args.modality == "video":
-        model = TransformerClassifier(n_classes=len(ID_SUBSET), in_dim=cfg.in_dim,
+        in_dim = getattr(cfg, "in_dim", 98)
+        model = TransformerClassifier(n_classes=len(ID_SUBSET), in_dim=in_dim,
                                      d_model=cfg.model.d_model, n_heads=cfg.model.n_heads,
                                      n_layers=cfg.model.n_layers, dropout=cfg.model.dropout)
     else:
-        model = FusionTransformerClassifier(n_classes=len(ID_SUBSET), in_dim_sensor=cfg.in_dim_sensor,
-                                           in_dim_video=cfg.in_dim_video, d_model=cfg.model.d_model,
+        in_dim_sensor = getattr(cfg, "in_dim_sensor", 12)
+        in_dim_video = getattr(cfg, "in_dim_video", 98)
+        model = FusionTransformerClassifier(n_classes=len(ID_SUBSET), in_dim_sensor=in_dim_sensor,
+                                           in_dim_video=in_dim_video, d_model=cfg.model.d_model,
                                            n_heads=cfg.model.n_heads, n_layers=cfg.model.n_layers,
                                            dropout=cfg.model.dropout,
                                            d_fusion=getattr(cfg.model, "d_fusion", cfg.model.d_model))
@@ -288,11 +292,11 @@ for fold_idx, test_subj in enumerate(subjects, 1):
         cal_d = compute_mahal(cal_e, centroids, covs)
         dist_th = float(np.percentile(cal_d, 95.0))
 
-        # FIX #2: Get softmax for conformal threshold
+        # FIX #2: Get softmax for conformal threshold (95% coverage = 5% FAR, matching Mahalanobis percentile)
         cal_probs, cal_l_verify = load_probs(cal_subj, ID_SUBSET, dataset_cls, cfg, model, DEVICE, global_stats_fusion)
         scores = 1.0 - cal_probs[np.arange(len(cal_l)), cal_l]
         n = len(scores)
-        q_level = (n + 1) * 0.9 / n
+        q_level = (n + 1) * 0.95 / n  # 95% confidence = 5% FAR, matching Mahalanobis at 95th percentile
         q_hat = float(np.quantile(scores, q_level, method='higher'))
 
         # FIX #3: Save cache
