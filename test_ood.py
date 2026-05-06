@@ -409,13 +409,7 @@ for fold_idx, test_subj in enumerate(subjects, 1):
         results["ood_tpr"].append(ood_tpr)
         results["auroc"].append(auroc)
 
-        # Tier breakdown
-        test_t1 = test_mahal.mean()
-        test_t2 = test_conformal_empty.mean()
-        ood_t1 = ood_mahal.mean()
-        ood_t2 = ood_conformal_empty.mean()
-
-        print(f"Fold {fold_idx}: ID Acc={id_acc:.3f} | FAR={far:.3f} (T1:{test_t1:.3f} T2:{test_t2:.3f}) | OOD TPR={ood_tpr:.3f} (T1:{ood_t1:.3f} T2:{ood_t2:.3f}) | AUROC={auroc:.3f}")
+        print(f"Fold {fold_idx}: ID Acc={id_acc:.3f} | FAR={far:.3f} | OOD TPR={ood_tpr:.3f} | AUROC={auroc:.3f}")
 
 print("\n" + "="*70)
 print("SUMMARY - TWO-TIER ALARM PERFORMANCE")
