@@ -378,14 +378,15 @@ def main() -> None:
         "cuda" if torch.cuda.is_available()           else "cpu"
     )
 
+    # Checkpoints save to modality-specific directory (user moves to final_eval manually)
     if args.augment_minority and args.imbalance:
-        ckpt_root = root / f"checkpoints/imbalance_aug/{args.modality}"
+        ckpt_root = root / f"checkpoints/{args.modality}_imbalance_aug"
     elif args.weighted_loss and args.imbalance:
-        ckpt_root = root / f"checkpoints/imbalance_weighted/{args.modality}"
+        ckpt_root = root / f"checkpoints/{args.modality}_imbalance_weighted"
     elif args.imbalance:
-        ckpt_root = root / f"checkpoints/imbalance/{args.modality}"
+        ckpt_root = root / f"checkpoints/{args.modality}_imbalance"
     else:
-        ckpt_root = root / cfg.checkpoint_dir
+        ckpt_root = root / f"checkpoints/{args.modality}"
     ckpt_root.mkdir(parents=True, exist_ok=True)
 
     for fold_idx, test_subject in enumerate(subjects):

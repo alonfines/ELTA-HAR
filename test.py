@@ -86,16 +86,25 @@ if args.imbalance:
 ROOT = Path(__file__).parent
 SAMPLE_DIR = ROOT / "Sample_Code"
 OUT_DIR = ROOT / "outputs"
+
+# ALL checkpoints now live in final_eval (protected from training overwrites)
 if args.conformal:
     CHECKPOINT_DIR = ROOT / f"checkpoints/conformal/{args.modality}"
 elif args.augment_minority and args.imbalance:
-    CHECKPOINT_DIR = ROOT / f"checkpoints/imbalance_aug/{args.modality}"
+    # Use consolidated final_eval structure: {modality}_imbalance_aug
+    modality_suffix = f"{args.modality}_imbalance_aug"
+    CHECKPOINT_DIR = ROOT / f"checkpoints/final_eval/{modality_suffix}"
 elif args.weighted_loss and args.imbalance:
-    CHECKPOINT_DIR = ROOT / f"checkpoints/imbalance_weighted/{args.modality}"
+    # Use consolidated final_eval structure: {modality}_imbalance_weighted
+    modality_suffix = f"{args.modality}_imbalance_weighted"
+    CHECKPOINT_DIR = ROOT / f"checkpoints/final_eval/{modality_suffix}"
 elif args.imbalance:
-    CHECKPOINT_DIR = ROOT / f"checkpoints/imbalance/{args.modality}"
+    # Use consolidated final_eval structure: {modality}_imbalance
+    modality_suffix = f"{args.modality}_imbalance"
+    CHECKPOINT_DIR = ROOT / f"checkpoints/final_eval/{modality_suffix}"
 else:
-    CHECKPOINT_DIR = ROOT / cfg.checkpoint_dir
+    # Default: use final_eval checkpoints (submitted weights - protected from overwriting)
+    CHECKPOINT_DIR = ROOT / f"checkpoints/final_eval/{args.modality}"
 OUT_DIR.mkdir(exist_ok=True)
 
 # ── Label map (needed before modality setup) ───────────────────────────────────
@@ -209,11 +218,17 @@ def fold_ckpt_path(subject: int, modality: str = None) -> Path:
 # ── Plot display wrapper (save + optional inline) ────────────────────────────────
 def display_and_save(fig, filepath, title=""):
     """Save plot to file and display inline if in Jupyter."""
-    plt.savefig(filepath, dpi=150)
-    print(f"✓ {title} saved to {filepath}")
+    plt.savefig(filepath, dpi=150, bbox_inches='tight')
+    print(f"✓ {title}")
     if is_jupyter():
         plt.show()
-    plt.close()
+    else:
+        plt.close()
+    # Always close to avoid resource warnings
+    try:
+        plt.close(fig)
+    except:
+        pass
 
 # ── Setup device ───────────────────────────────────────────────────────────────
 device = torch.device(
@@ -664,8 +679,7 @@ cm = save_confusion_matrix(
     cmap=cm_cmap,
 )
 print(f"✓ Confusion matrix saved to {path}")
-if is_jupyter():
-    plt.show()
+plt.show() if is_jupyter() else None
 plt.close()
 
 # ── Conformal Prediction Summary ───────────────────────────────────────────────────
@@ -693,7 +707,11 @@ if args.conformal:
     # Generate set size histogram
     fig = plot_set_size_histogram(pred_sets_all_folds, len(CLASS_NAMES), args.modality.upper())
     hist_path = OUT_DIR / f"test_{args.modality}_conformal_set_size_histogram.png"
-    display_and_save(fig, hist_path, title=f"Conformal set size histogram saved to {hist_path}")
+    plt.savefig(hist_path, dpi=150, bbox_inches='tight')
+    print(f"✓ Conformal set size histogram saved to {hist_path}")
+    if is_jupyter():
+        plt.show()
+    plt.close(fig)
 
 # ── Helper: parse failure_case from config ────────────────────────────────────────
 def parse_failure_case(cfg, label_map):
@@ -832,8 +850,11 @@ if args.analyse_failure:
 
                 plt.tight_layout()
                 path = OUT_DIR / "test_sensor_failure.png"
-                plt.savefig(path, dpi=150)
+                plt.savefig(path, dpi=150, bbox_inches='tight')
                 print(f"✓ Failure case plot saved to {path}")
+                if is_jupyter():
+                    plt.show()
+                plt.close()
 
             elif args.modality == "video":
                 # Video: Plot wrist trajectories from raw (T, 66) pose data
@@ -865,16 +886,32 @@ if args.analyse_failure:
 
                 plt.tight_layout()
                 path = OUT_DIR / "test_video_failure.png"
-                plt.savefig(path, dpi=150)
+                plt.savefig(path, dpi=150, bbox_inches='tight')
                 print(f"✓ Failure case plot saved to {path}")
+                if is_jupyter():
+                    plt.show()
+                plt.close()
 
             elif args.modality == "fusion":
                 print(f"  Failure case: true={action_pair[y_true]}, predicted={action_pair[y_pred]} (detailed visualization skipped for fusion)")
-
-            if is_jupyter():
-                plt.show()
-            plt.close()
     else:
         print("  No misclassifications found — classes fully separated.")
 else:
     print("  Skipping failure case analysis (use --analyse_failure to enable)")
+
+# ── Final Summary ─────────────────────────────────────────────────────────────────
+print("\n" + "="*70)
+print(f"{'EVALUATION COMPLETE — FINAL RESULTS':^70}")
+print("="*70)
+print(f"Modality:            {args.modality.upper()}")
+print(f"Accuracy:            {acc_mean:.3f} ± {acc_std:.3f}")
+print(f"F1 Score (Macro):    {f1_mean:.3f} ± {f1_std:.3f}")
+if args.conformal:
+    print(f"\nConformal Prediction:")
+    print(f"  Coverage (target {target_coverage:.1%}):  {coverage_mean:.3f} ± {coverage_std:.3f}")
+    print(f"  Avg Set Size:                  {set_size_mean:.2f} ± {set_size_std:.2f} (out of {len(CLASS_NAMES)} classes)")
+    print(f"  Ambiguity Rate:                {ambiguity_mean:.3f} ± {ambiguity_std:.3f}")
+print(f"\nOutputs:")
+print(f"  Confusion Matrix:   {path}")
+print(f"  All plots saved to: {OUT_DIR}")
+print("="*70)

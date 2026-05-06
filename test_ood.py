@@ -214,11 +214,12 @@ def compute_global_stats_fusion(train_subjs, action_subset, cfg):
 # ============================================================================
 
 print("="*70)
-print("OOD DETECTION: TWO-TIER EVALUATION (Mahalanobis + Conformal)")
+print("OOD DETECTION: MAHALANOBIS DISTANCE (8-Fold LOSO)")
 print("="*70)
 
 dataset_cls = {"sensor": SensorDataset, "video": PoseDataset, "fusion": FusionDataset}[args.modality]
-results = {"far": [], "ood_tpr": [], "auroc": []}
+results = {"far": [], "ood_tpr": [], "auroc": [], "test_d_all": [], "ood_d_all": [], "ood_actions_all": []}
+fold_details = []  # Track per-fold metrics for table
 
 for fold_idx, test_subj in enumerate(subjects, 1):
     # FIX #4: Use correct calibration subject (same as train.py)
@@ -357,6 +358,10 @@ for fold_idx, test_subj in enumerate(subjects, 1):
             if args.modality == "video":
                 kw["landmark_set"] = getattr(cfg, "landmark_set", "hands_legs_hips")
 
+        # Store original action IDs (reverse-map from labels 0,1,2 back to 24,9,12)
+        label_to_action = {i: a for i, a in enumerate(OOD_SUBSET)}
+        ood_action_ids = np.array([label_to_action[label] for _, label, _ in ood_samp])
+
         ds = dataset_cls(ood_samp_fmt, **kw)
         ood_e_all = []
         model.eval()
@@ -388,6 +393,21 @@ for fold_idx, test_subj in enumerate(subjects, 1):
         results["far"].append(far)
         results["ood_tpr"].append(ood_tpr)
         results["auroc"].append(auroc)
+        results["test_d_all"].append(test_d)
+        results["ood_d_all"].append(ood_d)
+        results["ood_actions_all"].append(ood_action_ids)
+
+        # Track per-fold and per-action metrics
+        ood_tpr_by_action = {}
+        for action_id in OOD_SUBSET:
+            mask = ood_action_ids == action_id
+            if mask.sum() > 0:
+                ood_tpr_by_action[action_id] = (ood_alarm[mask].mean(), mask.sum())
+
+        fold_details.append({
+            'fold': fold_idx, 'test_subj': test_subj, 'far': far, 'ood_tpr': ood_tpr, 'auroc': auroc,
+            'ood_tpr_by_action': ood_tpr_by_action, 'test_d': test_d, 'ood_d': ood_d, 'ood_actions': ood_action_ids
+        })
 
         print(f"Fold {fold_idx}: FAR={far:.3f} | OOD TPR={ood_tpr:.3f} | AUROC={auroc:.3f}")
 
@@ -401,3 +421,148 @@ if results["far"]:
 else:
     print("No results collected. Check if OOD samples were loaded successfully.")
 print("="*70)
+
+# ============================================================================
+# VISUALIZATION & ANALYSIS
+# ============================================================================
+
+if fold_details and results["far"]:
+    from sklearn.metrics import roc_curve
+
+    # 1. ROC CURVE
+    all_test_d = np.concatenate(results["test_d_all"])
+    all_ood_d = np.concatenate(results["ood_d_all"])
+    all_labels = np.concatenate([np.zeros_like(all_test_d), np.ones_like(all_ood_d)])
+    all_distances = np.concatenate([all_test_d, all_ood_d])
+
+    fpr, tpr, thresholds = roc_curve(all_labels, all_distances)
+    auroc_overall = roc_auc_score(all_labels, all_distances)
+
+    fig, ax = plt.subplots(figsize=(10, 8))
+    ax.plot(fpr, tpr, 'b-', linewidth=2.5, label=f'ROC Curve (AUC={auroc_overall:.3f})')
+    ax.plot([0, 1], [0, 1], 'k--', linewidth=1, label='Random Classifier')
+
+    # Mark the operating point (95th percentile threshold on calibration)
+    for detail in fold_details:
+        test_d = detail['test_d']
+        ood_d = detail['ood_d']
+        combined_d = np.concatenate([test_d, ood_d])
+        combined_l = np.concatenate([np.zeros_like(test_d), np.ones_like(ood_d)])
+        dist_th = np.percentile(test_d, 95.0)
+
+        fpr_pt = (test_d > dist_th).mean()
+        tpr_pt = (ood_d > dist_th).mean()
+        ax.plot(fpr_pt, tpr_pt, 'ro', markersize=8, alpha=0.6)
+
+    ax.set_xlabel('False Positive Rate (ID samples wrongly flagged)', fontsize=11)
+    ax.set_ylabel('True Positive Rate (OOD samples correctly detected)', fontsize=11)
+    ax.set_title(f'OOD Detection ROC Curve ({args.modality.upper()})', fontsize=13, fontweight='bold')
+    ax.grid(alpha=0.3)
+    ax.legend(fontsize=11, loc='lower right')
+    ax.set_xlim([0, 1])
+    ax.set_ylim([0, 1])
+
+    roc_path = Path("outputs") / f"ood_roc_{args.modality}.png"
+    roc_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(str(roc_path), dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"\n✓ ROC curve saved to {roc_path}")
+
+    # 2. RESULTS TABLE
+    print("\n" + "="*100)
+    print("PER-FOLD RESULTS TABLE")
+    print("="*100)
+    print(f"{'Fold':<6} {'Test Subject':<15} {'FAR':<8} {'OOD TPR':<10} {'AUROC':<8} {'Action Breakdown':<50}")
+    print("-"*100)
+
+    for detail in fold_details:
+        action_str = ", ".join([f"a{a}:{detail['ood_tpr_by_action'].get(a, (0, 0))[0]:.2f}"
+                               for a in OOD_SUBSET if a in detail['ood_tpr_by_action']])
+        print(f"{detail['fold']:<6} s{detail['test_subj']:<14} {detail['far']:<8.3f} {detail['ood_tpr']:<10.3f} "
+              f"{detail['auroc']:<8.3f} {action_str:<50}")
+
+    print("-"*100)
+    print(f"{'MEAN':<6} {'':<15} {np.mean(results['far']):<8.3f} {np.mean(results['ood_tpr']):<10.3f} "
+          f"{np.mean(results['auroc']):<8.3f}")
+    print(f"{'STDEV':<6} {'':<15} {np.std(results['far']):<8.3f} {np.std(results['ood_tpr']):<10.3f} "
+          f"{np.std(results['auroc']):<8.3f}")
+    print("="*100)
+
+    # 3. PER-ACTION ANALYSIS
+    print("\n" + "="*70)
+    print("PER-ACTION OOD DETECTION ANALYSIS")
+    print("="*70)
+    print(f"{'Action':<10} {'Count':<8} {'Mean TPR':<12} {'Stdev TPR':<12} {'Misclass Dist':<15}")
+    print("-"*70)
+
+    all_ood_actions = np.concatenate(results["ood_actions_all"])
+    all_ood_dist = np.concatenate(results["ood_d_all"])
+
+    for action_id in OOD_SUBSET:
+        mask = all_ood_actions == action_id
+        if mask.sum() > 0:
+            action_dists = all_ood_dist[mask]
+            # Get threshold from first fold (they're all the same)
+            first_threshold = np.percentile(fold_details[0]['test_d'], 95.0)
+            action_tprs = []
+            misclass_dists = []
+
+            for detail in fold_details:
+                action_mask = detail['ood_actions'] == action_id
+                if action_mask.sum() > 0:
+                    action_tprs.append((detail['ood_d'][action_mask] > first_threshold).mean())
+                    misclass_dists.extend(detail['ood_d'][action_mask & (detail['ood_d'] < first_threshold)])
+
+            mean_tpr = np.mean(action_tprs) if action_tprs else 0
+            std_tpr = np.std(action_tprs) if action_tprs else 0
+            misclass_str = f"{np.mean(misclass_dists):.2f}" if misclass_dists else "N/A"
+
+            print(f"Action {action_id:<5} {mask.sum():<8} {mean_tpr:<12.3f} {std_tpr:<12.3f} {misclass_str:<15}")
+
+    print("="*70)
+
+    # 4. MISCLASSIFICATION ANALYSIS
+    print("\n" + "="*70)
+    print("MISCLASSIFICATION ANALYSIS - Which OOD samples were NOT detected?")
+    print("="*70)
+
+    first_threshold = np.percentile(fold_details[0]['test_d'], 95.0)
+    misclass_summary = {action: [] for action in OOD_SUBSET}
+
+    for fold_idx, detail in enumerate(fold_details):
+        ood_d = detail['ood_d']
+        ood_actions = detail['ood_actions']
+
+        misclass_mask = ood_d < first_threshold  # Below threshold = not detected
+        if misclass_mask.sum() > 0:
+            for action_id in OOD_SUBSET:
+                action_mask = (ood_actions == action_id) & misclass_mask
+                if action_mask.sum() > 0:
+                    misclass_summary[action_id].append({
+                        'fold': detail['fold'],
+                        'test_subj': detail['test_subj'],
+                        'count': action_mask.sum(),
+                        'mean_dist': ood_d[action_mask].mean(),
+                        'min_dist': ood_d[action_mask].min()
+                    })
+
+    has_misclass = any(misclass_summary.values())
+
+    if has_misclass:
+        for action_id in OOD_SUBSET:
+            if misclass_summary[action_id]:
+                print(f"\nAction {action_id} - Undetected samples by fold:")
+                for m in misclass_summary[action_id]:
+                    print(f"  Fold {m['fold']} (test=s{m['test_subj']}): {m['count']} misclass, "
+                          f"mean_dist={m['mean_dist']:.4f}, min_dist={m['min_dist']:.4f}")
+
+                # Check if repeats
+                repeat_folds = len(misclass_summary[action_id])
+                if repeat_folds > 1:
+                    print(f"  ⚠️  Action {action_id} misclassified in {repeat_folds}/{len(fold_details)} folds")
+                else:
+                    print(f"  ✓ Action {action_id} misclassified in only {repeat_folds} fold(s)")
+    else:
+        print("✓ NO MISCLASSIFICATIONS - All OOD samples correctly detected across all folds!")
+
+    print("="*70)
