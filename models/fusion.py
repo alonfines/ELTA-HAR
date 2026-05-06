@@ -97,17 +97,20 @@ class FusionTransformerClassifier(nn.Module):
         )
 
     def forward(self, x_sensor: torch.Tensor, x_video: torch.Tensor,
-                missing_sensor = False, missing_video = False) -> torch.Tensor:
+                missing_sensor: bool = False, missing_video: bool = False,
+                return_embedding: bool = False):
         """Fuse sensor and video modalities.
 
         Args:
             x_sensor: (B, T_s, in_dim_sensor) sensor sequence
             x_video: (B, T_v, in_dim_video) video sequence
-            missing_sensor: bool or (B,) tensor mask. If True/mask, replace sensor embeddings with null_sensor
-            missing_video: bool or (B,) tensor mask. If True/mask, replace video embeddings with null_video
+            missing_sensor: replace sensor embeddings with null_sensor if True
+            missing_video: replace video embeddings with null_video if True
+            return_embedding: if True, return (logits, embedding) tuple
 
         Returns:
-            (B, n_classes) logits
+            If return_embedding=False: (B, n_classes) logits
+            If return_embedding=True: ((B, n_classes) logits, (B, 4*d_model) embedding)
         """
         # Extract encoder outputs without pooling
         z_sensor = self.sensor_backbone.get_encoder_features(x_sensor)  # (B, T_s, d_model)
@@ -146,4 +149,8 @@ class FusionTransformerClassifier(nn.Module):
         z_fused = torch.cat([z_sensor_mean, z_sensor_max, z_video_mean, z_video_max], dim=1)
 
         # Classification
-        return self.fusion_head(z_fused)
+        logits = self.fusion_head(z_fused)
+
+        if return_embedding:
+            return logits, z_fused
+        return logits
