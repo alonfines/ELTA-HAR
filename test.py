@@ -900,18 +900,9 @@ else:
     print("  Skipping failure case analysis (use --analyse_failure to enable)")
 
 # ── Final Summary ─────────────────────────────────────────────────────────────────
-print("\n" + "="*70)
-print(f"{'EVALUATION COMPLETE — FINAL RESULTS':^70}")
-print("="*70)
-print(f"Modality:            {args.modality.upper()}")
-print(f"Accuracy:            {acc_mean:.3f} ± {acc_std:.3f}")
-print(f"F1 Score (Macro):    {f1_mean:.3f} ± {f1_std:.3f}")
 if args.conformal:
     print(f"\nConformal Prediction:")
     print(f"  Coverage (target {target_coverage:.1%}):  {coverage_mean:.3f} ± {coverage_std:.3f}")
     print(f"  Avg Set Size:                  {set_size_mean:.2f} ± {set_size_std:.2f} (out of {len(CLASS_NAMES)} classes)")
     print(f"  Ambiguity Rate:                {ambiguity_mean:.3f} ± {ambiguity_std:.3f}")
-print(f"\nOutputs:")
-print(f"  Confusion Matrix:   {path}")
 print(f"  All plots saved to: {OUT_DIR}")
-print("="*70)

@@ -78,6 +78,9 @@ wandb/
 # Inertial data (keep path but not files)
 Inertial/*.mat
 
+# Dataset archives
+Zip Dataset/
+
 # Sample code (keep but note it's reference)
 Sample_Code/
 
