@@ -1,6 +1,6 @@
-# CLAUDE.md
+## Jupyter Notebook
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+The Jupyter notebook `ELTA_HAR_Assignment.ipynb` contains all the code for the assignment. Run all the code through the jupyter notebook. also, `ELTA_HAR_Assignment.pdf` is the rendered jupyter notebook.
 
 ## Project Overview
 
@@ -34,12 +34,6 @@ python3 test_ood.py --modality fusion --ood-actions 24 9 12
 python3 part1_eda.py
 python3 part2_video.py          # MediaPipe → Kalman → Transformer
 python3 part2_classical.py
-python3 part3_fusion.py         # Bayesian fusion
-python3 part3_fusion_feature.py # Feature-MLP fusion
-python3 part5_imbalance.py
-python3 part5_fusion.py
-python3 part6_confidence.py     # Temperature scaling + conformal prediction
-```
 
 **Device:** All scripts use MPS (Apple Silicon) > CUDA > CPU automatically.
 

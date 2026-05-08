@@ -20,27 +20,27 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.inspection import permutation_importance
 from sklearn.metrics import accuracy_score, f1_score
 from sklearn.preprocessing import StandardScaler
-import yaml
 
 from data.sensor_dataset import extract_imu_features as extract_features
 
 warnings.filterwarnings("ignore")
 
 # ── Load config ────────────────────────────────────────────────────────────────
-with open("config.yaml") as f:
-    cfg = yaml.safe_load(f)
+from utils import load_config
 
-SEED = cfg["seed"]
-SUBSET = cfg["subset"]
+ROOT = Path(__file__).parent
+cfg = load_config(ROOT / "configs/sensor.yaml")
+
+SEED = cfg.seed
+SUBSET = cfg.subset
 
 random.seed(SEED)
 np.random.seed(SEED)
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
-ROOT = Path(__file__).parent
-INERTIAL_DIR = ROOT / cfg["paths"]["inertial_dir"]
-SAMPLE_DIR = ROOT / cfg["paths"]["sample_dir"]
-OUT_DIR = ROOT / cfg["paths"]["output_dir"]
+INERTIAL_DIR = ROOT / cfg.inertial_dir
+SAMPLE_DIR = ROOT / "Sample_Code"
+OUT_DIR = ROOT / "outputs"
 OUT_DIR.mkdir(exist_ok=True)
 
 # ── File index ─────────────────────────────────────────────────────────────────

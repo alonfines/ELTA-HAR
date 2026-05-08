@@ -21,7 +21,6 @@ import scipy.io
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, f1_score
 from sklearn.preprocessing import StandardScaler
-import yaml
 
 from data.sensor_dataset import extract_imu_features as extract_features
 
@@ -37,21 +36,24 @@ def is_jupyter():
         return False
 
 # ── Load config ────────────────────────────────────────────────────────────────
-with open("config.yaml") as f:
-    cfg = yaml.safe_load(f)
+from utils import load_config
 
-SEED = cfg["seed"]
-SUBSET = cfg["subset"]
-REDUCED_FEATURE_INDICES = cfg["sensor"]["reduced_feature_indices"]
+ROOT = Path(__file__).parent
+cfg = load_config(ROOT / "configs/sensor.yaml")
+
+SEED = cfg.seed
+SUBSET = cfg.subset
+# Reduced features: 31 out of 36 (top 5 least important removed)
+# Using indices 0-30, skip feature 31-35 (least important per permutation importance)
+REDUCED_FEATURE_INDICES = list(range(31))
 
 random.seed(SEED)
 np.random.seed(SEED)
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
-ROOT = Path(__file__).parent
-INERTIAL_DIR = ROOT / cfg["paths"]["inertial_dir"]
-SAMPLE_DIR = ROOT / cfg["paths"]["sample_dir"]
-OUT_DIR = ROOT / cfg["paths"]["output_dir"]
+INERTIAL_DIR = ROOT / cfg.inertial_dir
+SAMPLE_DIR = ROOT / "Sample_Code"
+OUT_DIR = ROOT / "outputs"
 OUT_DIR.mkdir(exist_ok=True)
 
 for d in [INERTIAL_DIR, SAMPLE_DIR]:

@@ -13,7 +13,7 @@ normalization_type: global           # both modalities
 
 # Sequence lengths (must match training modality configs for distribution consistency)
 max_len_sensor: 256      # matches sensor.yaml
-max_len_video: 256       # matches video.yaml (was 128, causing distribution mismatch)
+max_len_video: 256       # matches video.yaml 
 
 # Input dimensions
 in_dim_sensor: 12        # 6 IMU + 6 velocity
@@ -35,7 +35,7 @@ training:
   grad_clip: 1.0
 
 # Class imbalance experiment (Part 5)
-imbalance_target_actions: [13, 22]  # Jogging, Front Boxing
+imbalance_target_actions: [19, 22]  # Knock on door, jogging
 imbalance_ratio: 0.25
 
 # Augmentation parameters for --augment_minority flag
@@ -53,4 +53,4 @@ wandb:
 
 # Conformal prediction (Part 6)
 conformal:
-  alpha: 0.1  # Confidence level: 1-alpha = 0.90 (90% coverage target)
+  alpha: 0

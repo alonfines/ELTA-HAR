@@ -30,7 +30,7 @@ wandb:
 
 # Conformal prediction (Part 6)
 conformal:
-  alpha: 0.1  # Confidence level: 1-alpha = 0.90 (90% coverage target)
+  alpha: 0.05  # Confidence level: 1-alpha = 0.95 (95% coverage target)
 
 failure_case:
   action_ids: [4, 13]  # 4: two hand front clap, 13: front boxing

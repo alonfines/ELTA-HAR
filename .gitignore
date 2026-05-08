@@ -72,7 +72,7 @@ checkpoints/backup_*/
 train_*.log
 *.log
 
-# Wandb
+# Weights & Biases (experiment tracking - ~500+ run folders)
 wandb/
 
 # Inertial data (keep path but not files)

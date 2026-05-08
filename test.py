@@ -89,7 +89,7 @@ OUT_DIR = ROOT / "outputs"
 
 # ALL checkpoints now live in final_eval (protected from training overwrites)
 if args.conformal:
-    CHECKPOINT_DIR = ROOT / f"checkpoints/conformal/{args.modality}"
+    CHECKPOINT_DIR = ROOT / f"checkpoints/final_eval/conformal/{args.modality}"
 elif args.augment_minority and args.imbalance:
     # Use consolidated final_eval structure: {modality}_imbalance_aug
     modality_suffix = f"{args.modality}_imbalance_aug"
@@ -544,10 +544,23 @@ with torch.no_grad():
 
             print(f"Fold {fold_idx + 1}: Test=s{test_subject}, Cal=s{cal_subject} (conformal)")
 
-            # Compute calibration stats (same training subjects as test fold)
+            # Compute calibration stats (exclude both test and cal subjects to match train.py split)
             if normalization_type == "global":
-                train_subject_samples_cal = [(s, y, data) for s, y, data in samples if s != test_subject]
-                # Reuse fold_dataset_kwargs which already has global stats
+                train_subject_samples_cal = [(s, y, data) for s, y, data in samples if s != test_subject and s != cal_subject]
+                # Recompute stats with proper 3-way split separation
+                if args.modality == "sensor":
+                    fold_dataset_kwargs["global_stats"] = compute_global_stats(train_subject_samples_cal)
+                elif args.modality == "video":
+                    landmark_indices = get_landmark_indices(landmark_set)
+                    fold_dataset_kwargs["global_stats"] = compute_global_stats_video(train_subject_samples_cal, landmark_indices)
+                elif args.modality == "fusion":
+                    train_sensor_samples_cal = [(s, y, data[0]) for s, y, data in train_subject_samples_cal
+                                               if isinstance(data, tuple) and len(data) == 2]
+                    train_video_samples_cal = [(s, y, data[1]) for s, y, data in train_subject_samples_cal
+                                              if isinstance(data, tuple) and len(data) == 2]
+                    fold_dataset_kwargs["global_stats_sensor"] = compute_global_stats(train_sensor_samples_cal)
+                    landmark_indices = get_landmark_indices(landmark_set)
+                    fold_dataset_kwargs["global_stats_video"] = compute_global_stats_video(train_video_samples_cal, landmark_indices)
             else:
                 train_subject_samples_cal = None
 
@@ -899,10 +912,4 @@ if args.analyse_failure:
 else:
     print("  Skipping failure case analysis (use --analyse_failure to enable)")
 
-# ── Final Summary ─────────────────────────────────────────────────────────────────
-if args.conformal:
-    print(f"\nConformal Prediction:")
-    print(f"  Coverage (target {target_coverage:.1%}):  {coverage_mean:.3f} ± {coverage_std:.3f}")
-    print(f"  Avg Set Size:                  {set_size_mean:.2f} ± {set_size_std:.2f} (out of {len(CLASS_NAMES)} classes)")
-    print(f"  Ambiguity Rate:                {ambiguity_mean:.3f} ± {ambiguity_std:.3f}")
-print(f"  All plots saved to: {OUT_DIR}")
+print(f"All plots saved to: {OUT_DIR}")

@@ -431,15 +431,13 @@ def main() -> None:
             # Move to appropriate device IMMEDIATELY to avoid initialization errors
             class_weights = class_weights.to(device)
             
-            # Log weight values for minority classes (13, 22) in fold 0 for verification
+            # Log weight values for target imbalance actions in fold 0 for verification
             if fold_idx == 0:
-                target_label_13 = label_map.get(13)
-                target_label_22 = label_map.get(22)
                 print(f"  Class weights computed (fold {fold_idx + 1}):")
-                if target_label_13 is not None:
-                    print(f"    Action 13 (label {target_label_13}): {class_weights[target_label_13]:.4f}")
-                if target_label_22 is not None:
-                    print(f"    Action 22 (label {target_label_22}): {class_weights[target_label_22]:.4f}")
+                for action_id in imbalance_target_actions:
+                    target_label = label_map.get(action_id)
+                    if target_label is not None:
+                        print(f"    Action {action_id} (label {target_label}): {class_weights[target_label]:.4f}")
 
 
         if len(train_samples) == 0:
