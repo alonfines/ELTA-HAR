@@ -92,11 +92,8 @@ ELTA Home Assignment/
 **To run:**
 
 ```bash
-# 1. Install dependencies
-pip install jupyter jupyterlab
-pip install torch torchvision torchaudio
-pip install numpy pandas matplotlib scipy scikit-learn
-pip install pyyaml pytorch-lightning wandb
+# 1. Install dependencies (see Environment Setup section below for details)
+pip install -r requirements.txt
 
 # 2. Start Jupyter
 jupyter notebook
@@ -299,23 +296,47 @@ python3 test_ood.py --modality fusion --ood-actions 24 9 12
 
 ### Installation
 
+**Quick Setup (Recommended):**
+
 ```bash
-# 1. Clone or download the project
+# 1. Navigate to project
 cd /Users/alonfines/Desktop/ELTA\ Home\ Assignment
 
 # 2. Create virtual environment (optional but recommended)
 python3 -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
-# 3. Install dependencies
+# 3. Install all dependencies at once
 pip install -r requirements.txt
-
-# Or install manually:
-pip install torch torchvision torchaudio
-pip install numpy pandas matplotlib scipy scikit-learn
-pip install pyyaml pytorch-lightning wandb
-pip install jupyterlab ipykernel
 ```
+
+**Manual Installation (if you prefer):**
+
+```bash
+# Core ML/DL framework
+pip install torch torchvision torchaudio pytorch-lightning
+
+# Data & analytics
+pip install numpy pandas scipy scikit-learn
+
+# Visualization, pose detection & config
+pip install matplotlib mediapipe pyyaml
+
+# Experiment tracking & notebooks
+pip install wandb jupyter jupyterlab ipykernel
+```
+
+**Dependency Details:**
+
+See `requirements.txt` for a complete list of all packages and their minimum versions. Key dependencies:
+- **PyTorch** (`torch`, `torchvision`, `torchaudio`) — deep learning framework
+- **PyTorch Lightning** — training framework (handles device detection, mixed precision, callbacks)
+- **NumPy, Pandas, SciPy, scikit-learn** — numerical computing and ML utilities
+- **Matplotlib** — visualization for confusion matrices, ROC curves, plots
+- **MediaPipe** — pose detection (33 landmarks from RGB video frames)
+- **PyYAML** — configuration file parsing
+- **Weights & Biases** (`wandb`) — experiment tracking and monitoring
+- **Jupyter, JupyterLab** — interactive notebooks (required for `ELTA_HAR_Assignment.ipynb`)
 
 ### Device Auto-Detection
 All scripts automatically detect GPU:

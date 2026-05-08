@@ -1,0 +1,26 @@
+# Core ML/DL Framework
+torch>=2.0.0
+torchvision>=0.15.0
+torchaudio>=2.0.0
+pytorch-lightning>=2.0.0
+
+# Data Processing
+numpy>=1.24.0
+pandas>=2.0.0
+scipy>=1.10.0
+scikit-learn>=1.2.0
+
+# Visualization & Pose Detection
+matplotlib>=3.7.0
+mediapipe>=0.10.0
+
+# Configuration
+pyyaml>=6.0
+
+# Experiment Tracking (optional but recommended)
+wandb>=0.14.0
+
+# Jupyter Environment
+jupyter>=1.0.0
+jupyterlab>=3.6.0
+ipykernel>=6.20.0
