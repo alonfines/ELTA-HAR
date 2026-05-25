@@ -1,0 +1,15 @@
+seed: 42
+subset: [1, 2, 4, 13, 19, 22, 23, 27]
+
+paths:
+  inertial_dir: Inertial
+  kalman_cache: outputs/pose_cache_kalman22
+  rgb_dirs:
+    - "RGB-part1"
+    - "RGB-part2"
+    - "RGB-part3"
+    - "RGB-part4"
+    
+  sample_dir: Sample_Code
+  output_dir: outputs
+  checkpoint_dir: checkpoints/fusion

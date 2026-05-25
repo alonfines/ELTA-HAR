@@ -26,7 +26,7 @@ from data.sensor_dataset import extract_imu_features
 warnings.filterwarnings("ignore")
 
 # ── Load config ───────────────────────────────────────────────────────────────
-with open("config.yaml") as f:
+with open("configs/config.yaml") as f:
     cfg = yaml.safe_load(f)
 
 SEED = cfg["seed"]

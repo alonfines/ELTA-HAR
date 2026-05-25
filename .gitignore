@@ -58,7 +58,7 @@ wheels/
 ehthumbs.db
 
 # Checkpoints (training artifacts)
-checkpoints/**/*.ckpt
+*.ckpt
 checkpoints/backup_*/
 
 # Logs
